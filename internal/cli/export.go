@@ -29,13 +29,14 @@ import (
 )
 
 var (
-	exportOutput     string
-	exportNoData     bool
-	exportNoCreate   bool
-	exportAddDrop    bool
-	exportTables     []string
-	exportCompress   string
-	exportBatchSize  int
+	exportOutput      string
+	exportNoData      bool
+	exportNoCreate    bool
+	exportAddDrop     bool
+	exportTables      []string
+	exportCompress    string
+	exportBatchSize   int
+	exportIncludeVars bool
 )
 
 var exportCmd = &cobra.Command{
@@ -52,7 +53,8 @@ Examples:
   ysm export mydb -o backup.sql.zst
   ysm export mydb -o backup.sql.xz --compress=xz
   ysm export mydb --no-data
-  ysm export mydb --tables users,posts`,
+  ysm export mydb --tables users,posts
+  ysm export mydb --include-vars`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbName := args[0]
@@ -124,6 +126,7 @@ Examples:
 			AddDropTable: exportAddDrop,
 			Compression:  compression,
 			BatchSize:    exportBatchSize,
+			IncludeVars:  exportIncludeVars,
 			OnProgress: func(currentTable string, tableNum, totalTables int, rowsExported int64) {
 				fmt.Printf("\r[%d/%d] Exporting: %-40s (%d rows)", tableNum, totalTables, currentTable, rowsExported)
 			},
@@ -172,4 +175,5 @@ func init() {
 	exportCmd.Flags().StringSliceVar(&exportTables, "tables", nil, "Export only specific tables (comma-separated)")
 	exportCmd.Flags().StringVar(&exportCompress, "compress", "", "Compression: gzip, xz, zstd, none (auto-detect from filename)")
 	exportCmd.Flags().IntVar(&exportBatchSize, "batch", 1000, "Rows per INSERT batch")
+	exportCmd.Flags().BoolVar(&exportIncludeVars, "include-vars", false, "Include session variable SET statements in export")
 }

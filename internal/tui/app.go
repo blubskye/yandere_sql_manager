@@ -38,6 +38,7 @@ const (
 	ViewQuery
 	ViewImport
 	ViewExport
+	ViewSettings
 )
 
 // Model is the main application model
@@ -159,6 +160,9 @@ func (m *Model) switchViewString(viewName, database, table string) (tea.Model, t
 	case "export":
 		m.currentView = ViewExport
 		m.views[ViewExport] = views.NewExportView(m.conn, database, m.width, m.height)
+	case "settings":
+		m.currentView = ViewSettings
+		m.views[ViewSettings] = views.NewSettingsView(m.conn, m.width, m.height)
 	}
 
 	if view, ok := m.views[m.currentView]; ok {

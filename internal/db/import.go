@@ -34,16 +34,19 @@ import (
 
 // ImportOptions configures the import behavior
 type ImportOptions struct {
-	FilePath       string
-	Database       string
-	CreateDB       bool   // Create database if it doesn't exist
-	RenameDB       string // Rename database during import (empty = use original)
-	BatchSize      int    // Number of statements per transaction batch (0 = auto)
-	BufferSize     int    // Read buffer size in bytes (0 = default 64KB)
-	OnProgress     func(bytesRead, totalBytes int64, statementsExecuted int64)
-	OnError        func(err error, statement string) bool // Return true to continue, false to abort
-	MaxMemory      int64  // Maximum memory for statement buffer (0 = 64MB)
-	ResumeFromByte int64  // Resume from this byte position (for interrupted imports)
+	FilePath           string
+	Database           string
+	CreateDB           bool              // Create database if it doesn't exist
+	RenameDB           string            // Rename database during import (empty = use original)
+	BatchSize          int               // Number of statements per transaction batch (0 = auto)
+	BufferSize         int               // Read buffer size in bytes (0 = default 64KB)
+	OnProgress         func(bytesRead, totalBytes int64, statementsExecuted int64)
+	OnError            func(err error, statement string) bool // Return true to continue, false to abort
+	MaxMemory          int64             // Maximum memory for statement buffer (0 = 64MB)
+	ResumeFromByte     int64             // Resume from this byte position (for interrupted imports)
+	DisableForeignKeys bool              // Disable foreign key checks during import
+	DisableUniqueChecks bool             // Disable unique checks during import
+	SetVariables       map[string]string // Additional variables to set before import
 }
 
 // ImportStats contains statistics about the import
@@ -187,6 +190,28 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 			return nil, err
 		}
 	}
+
+	// Apply import-specific variable settings
+	var restoreVars []string
+	if opts.DisableForeignKeys {
+		c.DB.Exec("SET @old_foreign_key_checks = @@foreign_key_checks")
+		c.DB.Exec("SET foreign_key_checks = 0")
+		restoreVars = append(restoreVars, "SET foreign_key_checks = @old_foreign_key_checks")
+	}
+	if opts.DisableUniqueChecks {
+		c.DB.Exec("SET @old_unique_checks = @@unique_checks")
+		c.DB.Exec("SET unique_checks = 0")
+		restoreVars = append(restoreVars, "SET unique_checks = @old_unique_checks")
+	}
+	for name, value := range opts.SetVariables {
+		c.SetVariable(name, value, false)
+	}
+	// Defer restore of variables
+	defer func() {
+		for _, stmt := range restoreVars {
+			c.DB.Exec(stmt)
+		}
+	}()
 
 	// Process SQL statements with batched transactions
 	var bytesRead atomic.Int64

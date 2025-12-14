@@ -42,16 +42,18 @@ const (
 
 // ExportOptions configures the export behavior
 type ExportOptions struct {
-	FilePath     string
-	Database     string
-	Tables       []string        // Empty = all tables
-	NoData       bool            // Export structure only
-	NoCreate     bool            // Export data only
-	AddDropTable bool            // Add DROP TABLE statements
-	Compression  CompressionType // Compression type (auto-detected from extension if empty)
-	BufferSize   int             // Write buffer size (0 = default 64KB)
-	BatchSize    int             // Rows per INSERT batch (0 = default 1000)
-	OnProgress   func(currentTable string, tableNum, totalTables int, rowsExported int64)
+	FilePath        string
+	Database        string
+	Tables          []string        // Empty = all tables
+	NoData          bool            // Export structure only
+	NoCreate        bool            // Export data only
+	AddDropTable    bool            // Add DROP TABLE statements
+	Compression     CompressionType // Compression type (auto-detected from extension if empty)
+	BufferSize      int             // Write buffer size (0 = default 64KB)
+	BatchSize       int             // Rows per INSERT batch (0 = default 1000)
+	IncludeVars     bool            // Include SET statements for session variables
+	IncludeVarsList []string        // Specific variables to include (empty = common variables)
+	OnProgress      func(currentTable string, tableNum, totalTables int, rowsExported int64)
 }
 
 // ExportStats contains statistics about the export
@@ -169,6 +171,23 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 	fmt.Fprintf(bufWriter, "-- Database: %s\n", opts.Database)
 	fmt.Fprintf(bufWriter, "-- Generated: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(bufWriter, "-- \"I'll never let your databases go~\"\n\n")
+
+	// Include session variables if requested
+	if opts.IncludeVars {
+		fmt.Fprintf(bufWriter, "-- Session Variables\n")
+		varList := opts.IncludeVarsList
+		if len(varList) == 0 {
+			varList = CommonVariables
+		}
+		for _, varName := range varList {
+			value, err := c.GetVariable(varName)
+			if err == nil && value != "" {
+				fmt.Fprintf(bufWriter, "SET @saved_%s = @@%s;\n", varName, varName)
+				fmt.Fprintf(bufWriter, "SET %s = '%s';\n", varName, escapeString(value))
+			}
+		}
+		fmt.Fprintf(bufWriter, "\n")
+	}
 
 	fmt.Fprintf(bufWriter, "SET FOREIGN_KEY_CHECKS=0;\n")
 	fmt.Fprintf(bufWriter, "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n")

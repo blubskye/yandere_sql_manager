@@ -82,6 +82,7 @@ func init() {
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(queryCmd)
 	rootCmd.AddCommand(profileCmd)
+	rootCmd.AddCommand(setCmd)
 	rootCmd.AddCommand(versionCmd)
 }
 
@@ -188,7 +189,27 @@ func connect() (*db.Connection, error) {
 		connCfg.Password = pwd
 	}
 
-	return db.Connect(connCfg)
+	conn, err := db.Connect(connCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply profile variables if using a profile
+	profileName := profile
+	if profileName == "" && cfg != nil {
+		profileName = cfg.DefaultProfile
+	}
+
+	if profileName != "" && cfg != nil {
+		p, err := cfg.GetProfile(profileName)
+		if err == nil && p.Variables != nil && len(p.Variables) > 0 {
+			if err := conn.ApplyVariables(p.Variables); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to apply profile variables: %v\n", err)
+			}
+		}
+	}
+
+	return conn, nil
 }
 
 func startTUI() error {
@@ -209,7 +230,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("YSM (Yandere SQL Manager) v0.1.0")
+		fmt.Println("YSM (Yandere SQL Manager) v0.1.1")
 		fmt.Println("\"I'll never let your databases go~\"")
 		fmt.Println()
 		fmt.Println("Copyright (C) 2025 blubskye")

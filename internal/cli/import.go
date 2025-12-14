@@ -30,10 +30,12 @@ import (
 )
 
 var (
-	importCreateDB  bool
-	importRename    string
-	importBatchSize int
-	importContinue  bool
+	importCreateDB      bool
+	importRename        string
+	importBatchSize     int
+	importContinue      bool
+	importNoFKChecks    bool
+	importNoUniqueChecks bool
 )
 
 var importCmd = &cobra.Command{
@@ -49,7 +51,8 @@ Examples:
   ysm import backup.sql.zst -d mydb
   ysm import backup.sql.xz -d mydb --create
   ysm import backup.sql -d olddb --rename newdb
-  ysm import large_backup.sql -d mydb --batch=500`,
+  ysm import large_backup.sql -d mydb --batch=500
+  ysm import backup.sql -d mydb --no-fk-checks`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]
@@ -107,11 +110,13 @@ Examples:
 		var lastProgress time.Time
 
 		opts := db.ImportOptions{
-			FilePath:  filePath,
-			Database:  database,
-			CreateDB:  importCreateDB || database == "",
-			RenameDB:  importRename,
-			BatchSize: importBatchSize,
+			FilePath:            filePath,
+			Database:            database,
+			CreateDB:            importCreateDB || database == "",
+			RenameDB:            importRename,
+			BatchSize:           importBatchSize,
+			DisableForeignKeys:  importNoFKChecks,
+			DisableUniqueChecks: importNoUniqueChecks,
 			OnProgress: func(bytesRead, totalBytes int64, stmts int64) {
 				now := time.Now()
 				if now.Sub(lastProgress) < 100*time.Millisecond {
@@ -159,4 +164,6 @@ func init() {
 	importCmd.Flags().StringVar(&importRename, "rename", "", "Rename database during import")
 	importCmd.Flags().IntVar(&importBatchSize, "batch", 100, "Statements per transaction batch")
 	importCmd.Flags().BoolVar(&importContinue, "continue", false, "Continue on errors")
+	importCmd.Flags().BoolVar(&importNoFKChecks, "no-fk-checks", false, "Disable foreign key checks during import")
+	importCmd.Flags().BoolVar(&importNoUniqueChecks, "no-unique-checks", false, "Disable unique checks during import")
 }

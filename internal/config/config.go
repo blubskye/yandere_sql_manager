@@ -35,12 +35,13 @@ type Config struct {
 
 // Profile holds connection settings for a database
 type Profile struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password,omitempty"`
-	Socket   string `yaml:"socket,omitempty"`
-	Database string `yaml:"database,omitempty"`
+	Host      string            `yaml:"host"`
+	Port      int               `yaml:"port"`
+	User      string            `yaml:"user"`
+	Password  string            `yaml:"password,omitempty"`
+	Socket    string            `yaml:"socket,omitempty"`
+	Database  string            `yaml:"database,omitempty"`
+	Variables map[string]string `yaml:"variables,omitempty"`
 }
 
 // ToConnectionConfig converts a Profile to db.ConnectionConfig

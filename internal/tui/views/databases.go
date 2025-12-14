@@ -150,6 +150,12 @@ func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !v.list.SettingFilter() {
 				return v, v.loadDatabases
 			}
+		case "v":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "settings"}
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -187,7 +193,7 @@ func (v *DatabasesView) View() string {
 
 	b.WriteString(v.list.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter: Select | /: Filter | i: Import | e: Export | s: SQL Query | r: Refresh | q: Quit"))
+	b.WriteString(helpStyle.Render("Enter: Select | /: Filter | i: Import | e: Export | s: SQL | v: Variables | r: Refresh | q: Quit"))
 
 	return b.String()
 }
