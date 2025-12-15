@@ -23,8 +23,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blubskye/yandere_sql_manager/internal/logging"
@@ -60,6 +63,7 @@ type BackupOptions struct {
 	Compression   CompressionType // Compression type
 	Description   string          // Optional description
 	Profile       string          // Optional profile name
+	Parallel      int             // Number of parallel workers (0 = sequential, -1 = auto)
 	OnProgress    func(database string, dbNum, totalDBs int)
 }
 
@@ -167,46 +171,162 @@ func (c *Connection) CreateBackup(opts BackupOptions) (*BackupMetadata, error) {
 		ext = ".sql.zst"
 	}
 
-	// Export each database
+	// Determine parallelism
+	parallelWorkers := opts.Parallel
+	if parallelWorkers < 0 {
+		parallelWorkers = runtime.NumCPU()
+	}
+	if parallelWorkers > len(databases) {
+		parallelWorkers = len(databases)
+	}
+
 	var totalSize int64
-	for i, dbName := range databases {
-		if opts.OnProgress != nil {
-			opts.OnProgress(dbName, i+1, len(databases))
+
+	if parallelWorkers > 1 {
+		// Parallel backup
+		logging.Info("Starting parallel backup of %d databases with %d workers", len(databases), parallelWorkers)
+
+		type backupResult struct {
+			index    int
+			database string
+			file     BackupFile
+			err      error
 		}
 
-		filename := fmt.Sprintf("%s%s", dbName, ext)
-		filePath := filepath.Join(backupDir, filename)
+		resultsChan := make(chan backupResult, len(databases))
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, parallelWorkers) // Semaphore for limiting concurrency
+		var completed atomic.Int64
 
-		exportOpts := ExportOptions{
-			FilePath:     filePath,
-			Database:     dbName,
-			AddDropTable: true,
-			Compression:  opts.Compression,
+		// Launch backup goroutines
+		for i, dbName := range databases {
+			wg.Add(1)
+			go func(idx int, db string) {
+				defer wg.Done()
+				sem <- struct{}{}        // Acquire semaphore
+				defer func() { <-sem }() // Release semaphore
+
+				filename := fmt.Sprintf("%s%s", db, ext)
+				filePath := filepath.Join(backupDir, filename)
+
+				exportOpts := ExportOptions{
+					FilePath:     filePath,
+					Database:     db,
+					AddDropTable: true,
+					Compression:  opts.Compression,
+				}
+
+				stats, err := c.ExportSQLWithStats(exportOpts)
+				if err != nil {
+					resultsChan <- backupResult{
+						index:    idx,
+						database: db,
+						err:      fmt.Errorf("failed to backup database %s: %w", db, err),
+					}
+					return
+				}
+
+				// Get file size
+				fileInfo, err := os.Stat(filePath)
+				if err != nil {
+					resultsChan <- backupResult{
+						index:    idx,
+						database: db,
+						err:      fmt.Errorf("failed to get file info for %s: %w", filename, err),
+					}
+					return
+				}
+
+				comp := completed.Add(1)
+				if opts.OnProgress != nil {
+					opts.OnProgress(db, int(comp), len(databases))
+				}
+
+				resultsChan <- backupResult{
+					index:    idx,
+					database: db,
+					file: BackupFile{
+						Database: db,
+						Filename: filename,
+						Size:     fileInfo.Size(),
+						Tables:   stats.TablesExported,
+						Rows:     stats.RowsExported,
+					},
+				}
+			}(i, dbName)
 		}
 
-		stats, err := c.ExportSQLWithStats(exportOpts)
-		if err != nil {
-			// Clean up partial backup on error
+		// Wait for all goroutines and close results channel
+		go func() {
+			wg.Wait()
+			close(resultsChan)
+		}()
+
+		// Collect results
+		results := make([]backupResult, len(databases))
+		var firstError error
+		for result := range resultsChan {
+			results[result.index] = result
+			if result.err != nil && firstError == nil {
+				firstError = result.err
+			}
+		}
+
+		// Check for errors
+		if firstError != nil {
 			os.RemoveAll(backupDir)
-			return nil, fmt.Errorf("failed to backup database %s: %w", dbName, err)
+			return nil, firstError
 		}
 
-		// Get file size
-		fileInfo, err := os.Stat(filePath)
-		if err != nil {
-			os.RemoveAll(backupDir)
-			return nil, fmt.Errorf("failed to get file info for %s: %w", filename, err)
+		// Build metadata from ordered results
+		for _, result := range results {
+			metadata.Files = append(metadata.Files, result.file)
+			totalSize += result.file.Size
 		}
 
-		metadata.Files = append(metadata.Files, BackupFile{
-			Database: dbName,
-			Filename: filename,
-			Size:     fileInfo.Size(),
-			Tables:   stats.TablesExported,
-			Rows:     stats.RowsExported,
-		})
+		logging.Info("Parallel backup completed: %d databases backed up", len(databases))
 
-		totalSize += fileInfo.Size()
+	} else {
+		// Sequential backup (original logic)
+		for i, dbName := range databases {
+			if opts.OnProgress != nil {
+				opts.OnProgress(dbName, i+1, len(databases))
+			}
+
+			filename := fmt.Sprintf("%s%s", dbName, ext)
+			filePath := filepath.Join(backupDir, filename)
+
+			exportOpts := ExportOptions{
+				FilePath:     filePath,
+				Database:     dbName,
+				AddDropTable: true,
+				Compression:  opts.Compression,
+			}
+
+			stats, err := c.ExportSQLWithStats(exportOpts)
+			if err != nil {
+				// Clean up partial backup on error
+				os.RemoveAll(backupDir)
+				return nil, fmt.Errorf("failed to backup database %s: %w", dbName, err)
+			}
+
+			// Get file size
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				os.RemoveAll(backupDir)
+				return nil, fmt.Errorf("failed to get file info for %s: %w", filename, err)
+			}
+
+			metadata.Files = append(metadata.Files, BackupFile{
+				Database: dbName,
+				Filename: filename,
+				Size:     fileInfo.Size(),
+				Tables:   stats.TablesExported,
+				Rows:     stats.RowsExported,
+			})
+
+			totalSize += fileInfo.Size()
+		}
 	}
 
 	metadata.TotalSize = totalSize

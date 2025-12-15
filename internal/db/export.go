@@ -20,13 +20,17 @@ package db
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/blubskye/yandere_sql_manager/internal/buffer"
@@ -68,6 +72,7 @@ type ExportOptions struct {
 	IncludeVarsList []string        // Specific variables to include (empty = common variables)
 	Format          DumpFormat      // Dump format (PostgreSQL: sql, custom, tar, dir)
 	UseNativeTool   bool            // Use pg_dump/mysqldump instead of built-in export
+	Parallel        int             // Number of parallel workers for export (0 = sequential)
 	OnProgress      func(currentTable string, tableNum, totalTables int, rowsExported int64)
 }
 
@@ -252,40 +257,61 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 		}
 	}
 
-	// Export each table
+	// Determine parallelism
+	parallelWorkers := opts.Parallel
+	if parallelWorkers <= 0 {
+		parallelWorkers = 1 // Sequential by default
+	}
+	if parallelWorkers > len(tables) {
+		parallelWorkers = len(tables)
+	}
+
+	// Export tables - parallel or sequential
 	var totalRows int64
-	for i, tableName := range tables {
-		if opts.OnProgress != nil {
-			opts.OnProgress(tableName, i+1, len(tables), totalRows)
+	if parallelWorkers > 1 && len(tables) > 1 {
+		// Parallel export
+		logging.Debug("Exporting %d tables with %d parallel workers", len(tables), parallelWorkers)
+		rowCount, err := c.exportTablesParallel(bufWriter, tables, opts, parallelWorkers)
+		if err != nil {
+			return nil, err
 		}
-
-		fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n")
-		fmt.Fprintf(bufWriter, "-- Table structure for table %s\n", c.QuoteIdentifier(tableName))
-		fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n\n")
-
-		// Export table structure
-		if !opts.NoCreate {
-			if opts.AddDropTable {
-				fmt.Fprintf(bufWriter, "DROP TABLE IF EXISTS %s;\n", c.QuoteIdentifier(tableName))
+		totalRows = rowCount
+		stats.TablesExported = len(tables)
+	} else {
+		// Sequential export
+		for i, tableName := range tables {
+			if opts.OnProgress != nil {
+				opts.OnProgress(tableName, i+1, len(tables), totalRows)
 			}
 
-			createStmt, err := c.getCreateTable(tableName)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get CREATE TABLE for %s: %w", tableName, err)
-			}
-			fmt.Fprintf(bufWriter, "%s;\n\n", createStmt)
-		}
+			fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n")
+			fmt.Fprintf(bufWriter, "-- Table structure for table %s\n", c.QuoteIdentifier(tableName))
+			fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n\n")
 
-		// Export table data
-		if !opts.NoData {
-			rowCount, err := c.exportTableDataBuffered(bufWriter, tableName, opts.BatchSize)
-			if err != nil {
-				return nil, fmt.Errorf("failed to export data for %s: %w", tableName, err)
-			}
-			totalRows += rowCount
-		}
+			// Export table structure
+			if !opts.NoCreate {
+				if opts.AddDropTable {
+					fmt.Fprintf(bufWriter, "DROP TABLE IF EXISTS %s;\n", c.QuoteIdentifier(tableName))
+				}
 
-		stats.TablesExported++
+				createStmt, err := c.getCreateTable(tableName)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get CREATE TABLE for %s: %w", tableName, err)
+				}
+				fmt.Fprintf(bufWriter, "%s;\n\n", createStmt)
+			}
+
+			// Export table data
+			if !opts.NoData {
+				rowCount, err := c.exportTableDataBuffered(bufWriter, tableName, opts.BatchSize)
+				if err != nil {
+					return nil, fmt.Errorf("failed to export data for %s: %w", tableName, err)
+				}
+				totalRows += rowCount
+			}
+
+			stats.TablesExported++
+		}
 	}
 
 	// Write database-specific footer
@@ -471,6 +497,148 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 	}
 
 	return rowCount, rows.Err()
+}
+
+// tableExportResult holds the result of exporting a single table
+type tableExportResult struct {
+	Index     int
+	TableName string
+	Data      []byte
+	RowCount  int64
+	Error     error
+}
+
+// exportTablesParallel exports multiple tables in parallel
+func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string, opts ExportOptions, workers int) (int64, error) {
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+
+	logging.Info("Starting parallel export of %d tables with %d workers", len(tables), workers)
+
+	// Channel for table export tasks
+	type exportTask struct {
+		index     int
+		tableName string
+	}
+
+	tasks := make(chan exportTask, len(tables))
+	results := make(chan tableExportResult, len(tables))
+
+	// Track progress
+	var completed atomic.Int64
+	var totalRows atomic.Int64
+
+	// Start workers
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for task := range tasks {
+				logging.Debug("Worker %d exporting table: %s", workerID, task.tableName)
+
+				var buf bytes.Buffer
+				bufWriter := bufio.NewWriterSize(&buf, opts.BufferSize)
+
+				// Write table header
+				fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n")
+				fmt.Fprintf(bufWriter, "-- Table structure for table %s\n", c.QuoteIdentifier(task.tableName))
+				fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n\n")
+
+				// Export table structure
+				if !opts.NoCreate {
+					if opts.AddDropTable {
+						fmt.Fprintf(bufWriter, "DROP TABLE IF EXISTS %s;\n", c.QuoteIdentifier(task.tableName))
+					}
+
+					createStmt, err := c.getCreateTable(task.tableName)
+					if err != nil {
+						results <- tableExportResult{
+							Index:     task.index,
+							TableName: task.tableName,
+							Error:     fmt.Errorf("failed to get CREATE TABLE for %s: %w", task.tableName, err),
+						}
+						continue
+					}
+					fmt.Fprintf(bufWriter, "%s;\n\n", createStmt)
+				}
+
+				// Export table data
+				var rowCount int64
+				if !opts.NoData {
+					var err error
+					rowCount, err = c.exportTableDataBuffered(bufWriter, task.tableName, opts.BatchSize)
+					if err != nil {
+						results <- tableExportResult{
+							Index:     task.index,
+							TableName: task.tableName,
+							Error:     fmt.Errorf("failed to export data for %s: %w", task.tableName, err),
+						}
+						continue
+					}
+				}
+
+				bufWriter.Flush()
+
+				results <- tableExportResult{
+					Index:     task.index,
+					TableName: task.tableName,
+					Data:      buf.Bytes(),
+					RowCount:  rowCount,
+				}
+
+				completed.Add(1)
+				totalRows.Add(rowCount)
+
+				if opts.OnProgress != nil {
+					opts.OnProgress(task.tableName, int(completed.Load()), len(tables), totalRows.Load())
+				}
+			}
+		}(w)
+	}
+
+	// Submit all tasks
+	for i, tableName := range tables {
+		tasks <- exportTask{index: i, tableName: tableName}
+	}
+	close(tasks)
+
+	// Wait for all workers to finish
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results in order
+	tableResults := make([]tableExportResult, len(tables))
+	var firstError error
+	resultCount := 0
+
+	for result := range results {
+		tableResults[result.Index] = result
+		if result.Error != nil && firstError == nil {
+			firstError = result.Error
+		}
+		resultCount++
+	}
+
+	// Check for errors
+	if firstError != nil {
+		return 0, firstError
+	}
+
+	// Write results in order to maintain table order in output
+	for _, result := range tableResults {
+		if len(result.Data) > 0 {
+			writer.Write(result.Data)
+		}
+	}
+
+	logging.Info("Parallel export completed: %d tables, %d total rows", len(tables), totalRows.Load())
+
+	return totalRows.Load(), nil
 }
 
 // formatValueForExport formats a value for use in an export SQL file

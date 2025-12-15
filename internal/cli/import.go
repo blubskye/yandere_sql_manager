@@ -38,6 +38,7 @@ var (
 	importNoUniqueChecks bool
 	importUseNative      bool
 	importJobs           int
+	importParallel       int
 )
 
 var importCmd = &cobra.Command{
@@ -56,6 +57,7 @@ Examples:
   ysm import backup.sql -d olddb --rename newdb
   ysm import large_backup.sql -d mydb --batch=500
   ysm import backup.sql -d mydb --no-fk-checks
+  ysm import large_backup.sql -d mydb --parallel=4
 
 PostgreSQL native formats:
   ysm import backup.dump -d mydb --create
@@ -127,6 +129,8 @@ PostgreSQL native formats:
 			DisableUniqueChecks: importNoUniqueChecks,
 			UseNativeTool:       importUseNative,
 			Jobs:                importJobs,
+			Parallel:            importParallel,
+			ContinueOnError:     importContinue,
 			OnProgress: func(bytesRead, totalBytes int64, stmts int64) {
 				now := time.Now()
 				if now.Sub(lastProgress) < 100*time.Millisecond {
@@ -178,4 +182,5 @@ func init() {
 	importCmd.Flags().BoolVar(&importNoUniqueChecks, "no-unique-checks", false, "Disable unique checks during import")
 	importCmd.Flags().BoolVar(&importUseNative, "native", false, "Use native tools (pg_restore/psql for PostgreSQL)")
 	importCmd.Flags().IntVar(&importJobs, "jobs", 0, "Number of parallel jobs for pg_restore (PostgreSQL only)")
+	importCmd.Flags().IntVar(&importParallel, "parallel", 0, "Number of parallel workers for batch execution (0 = sequential)")
 }

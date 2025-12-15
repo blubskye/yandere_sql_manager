@@ -32,6 +32,7 @@ var (
 	backupOutputDir   string
 	backupCompression string
 	backupDescription string
+	backupParallel    int
 	restoreDropExist  bool
 	restoreRename     []string
 )
@@ -58,7 +59,9 @@ Examples:
   ysm backup create                           # Backup all databases
   ysm backup create mydb1 mydb2               # Backup specific databases
   ysm backup create --compress zstd           # Use zstd compression
-  ysm backup create -o /path/to/backups       # Custom output directory`,
+  ysm backup create -o /path/to/backups       # Custom output directory
+  ysm backup create --parallel 4              # Backup 4 databases in parallel
+  ysm backup create --parallel -1             # Auto-detect parallelism (CPU count)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		conn, err := connect()
 		if err != nil {
@@ -82,6 +85,7 @@ Examples:
 			Compression: compression,
 			Description: backupDescription,
 			Profile:     profile,
+			Parallel:    backupParallel,
 			OnProgress: func(database string, dbNum, totalDBs int) {
 				fmt.Printf("Backing up %s (%d/%d)...\n", database, dbNum, totalDBs)
 			},
@@ -281,6 +285,7 @@ func init() {
 	backupCreateCmd.Flags().StringVarP(&backupOutputDir, "output", "o", "", "Output directory for backups")
 	backupCreateCmd.Flags().StringVarP(&backupCompression, "compress", "c", "", "Compression type (gzip, xz, zstd)")
 	backupCreateCmd.Flags().StringVar(&backupDescription, "description", "", "Backup description")
+	backupCreateCmd.Flags().IntVar(&backupParallel, "parallel", 0, "Number of parallel workers (0=sequential, -1=auto)")
 
 	// Restore flags
 	backupRestoreCmd.Flags().BoolVar(&restoreDropExist, "drop", false, "Drop existing databases before restore")

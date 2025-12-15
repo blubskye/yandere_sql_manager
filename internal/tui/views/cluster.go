@@ -21,6 +21,7 @@ package views
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blubskye/yandere_sql_manager/internal/db"
@@ -48,6 +49,8 @@ type ClusterView struct {
 	loading     bool
 	autoRefresh bool
 	lastUpdate  time.Time
+	statusMu    sync.RWMutex // Protects status data for background updates
+	stopChan    chan struct{}
 
 	// Status data
 	clusterStatus *db.ClusterStatus
@@ -85,11 +88,12 @@ var (
 // NewClusterView creates a new cluster view
 func NewClusterView(conn *db.Connection, width, height int) *ClusterView {
 	return &ClusterView{
-		conn:    conn,
-		width:   width,
-		height:  height,
-		loading: true,
-		mode:    clusterModeStatus,
+		conn:     conn,
+		width:    width,
+		height:   height,
+		loading:  true,
+		mode:     clusterModeStatus,
+		stopChan: make(chan struct{}),
 	}
 }
 
@@ -120,6 +124,84 @@ func (v *ClusterView) loadReplicationStatus() tea.Msg {
 		return err
 	}
 	return replicationStatusLoadedMsg{status: status}
+}
+
+// loadClusterStatusBackground fetches cluster status in a background goroutine
+func (v *ClusterView) loadClusterStatusBackground() tea.Cmd {
+	return func() tea.Msg {
+		resultChan := make(chan clusterStatusLoadedMsg, 1)
+		errChan := make(chan error, 1)
+
+		go func() {
+			status, err := v.conn.GetClusterStatus()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			resultChan <- clusterStatusLoadedMsg{status: status}
+		}()
+
+		select {
+		case result := <-resultChan:
+			return result
+		case err := <-errChan:
+			return err
+		case <-v.stopChan:
+			return nil
+		}
+	}
+}
+
+// loadGaleraStatusBackground fetches Galera status in a background goroutine
+func (v *ClusterView) loadGaleraStatusBackground() tea.Cmd {
+	return func() tea.Msg {
+		resultChan := make(chan galeraStatusLoadedMsg, 1)
+		errChan := make(chan error, 1)
+
+		go func() {
+			status, err := v.conn.GetGaleraStatus()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			resultChan <- galeraStatusLoadedMsg{status: status}
+		}()
+
+		select {
+		case result := <-resultChan:
+			return result
+		case err := <-errChan:
+			return err
+		case <-v.stopChan:
+			return nil
+		}
+	}
+}
+
+// loadReplicationStatusBackground fetches replication status in a background goroutine
+func (v *ClusterView) loadReplicationStatusBackground() tea.Cmd {
+	return func() tea.Msg {
+		resultChan := make(chan replicationStatusLoadedMsg, 1)
+		errChan := make(chan error, 1)
+
+		go func() {
+			status, err := v.conn.GetMariaDBReplicationStatus()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			resultChan <- replicationStatusLoadedMsg{status: status}
+		}()
+
+		select {
+		case result := <-resultChan:
+			return result
+		case err := <-errChan:
+			return err
+		case <-v.stopChan:
+			return nil
+		}
+	}
 }
 
 type clusterStatusLoadedMsg struct {
@@ -172,6 +254,10 @@ func (v *ClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return v, nil
 		case "esc", "backspace", "q":
+			// Stop any background operations
+			v.autoRefresh = false
+			close(v.stopChan)
+			v.stopChan = make(chan struct{}) // Reset for potential reuse
 			return v, func() tea.Msg {
 				return SwitchViewMsg{View: "databases"}
 			}
@@ -182,7 +268,9 @@ func (v *ClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.height = msg.Height
 
 	case clusterStatusLoadedMsg:
+		v.statusMu.Lock()
 		v.clusterStatus = msg.status
+		v.statusMu.Unlock()
 		v.loading = false
 		v.lastUpdate = time.Now()
 		v.err = nil
@@ -192,7 +280,9 @@ func (v *ClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case galeraStatusLoadedMsg:
+		v.statusMu.Lock()
 		v.galeraStatus = msg.status
+		v.statusMu.Unlock()
 		v.loading = false
 		v.lastUpdate = time.Now()
 		v.err = nil
@@ -202,7 +292,9 @@ func (v *ClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case replicationStatusLoadedMsg:
+		v.statusMu.Lock()
 		v.replStatus = msg.status
+		v.statusMu.Unlock()
 		v.loading = false
 		v.lastUpdate = time.Now()
 		v.err = nil
@@ -213,7 +305,8 @@ func (v *ClusterView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case clusterTickMsg:
 		if v.autoRefresh {
-			return v, v.getLoadCmd()
+			v.loading = true
+			return v, v.getLoadCmdBackground()
 		}
 		return v, nil
 
@@ -237,6 +330,21 @@ func (v *ClusterView) getLoadCmd() tea.Cmd {
 		return v.loadClusterStatus
 	default:
 		return v.loadClusterStatus
+	}
+}
+
+// getLoadCmdBackground returns the background version of the load command
+func (v *ClusterView) getLoadCmdBackground() tea.Cmd {
+	switch v.mode {
+	case clusterModeGalera:
+		return v.loadGaleraStatusBackground()
+	case clusterModeReplication:
+		if v.conn.Config.Type == db.DatabaseTypeMariaDB {
+			return v.loadReplicationStatusBackground()
+		}
+		return v.loadClusterStatusBackground()
+	default:
+		return v.loadClusterStatusBackground()
 	}
 }
 

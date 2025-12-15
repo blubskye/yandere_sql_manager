@@ -8,7 +8,7 @@
 
 set -e
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 BINARY="ysm"
 
 # Colors for pretty output <3

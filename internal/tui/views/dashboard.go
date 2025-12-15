@@ -21,6 +21,7 @@ package views
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/blubskye/yandere_sql_manager/internal/db"
@@ -30,14 +31,16 @@ import (
 
 // DashboardView shows server statistics
 type DashboardView struct {
-	conn       *db.Connection
-	width      int
-	height     int
-	err        error
-	stats      *db.ServerStats
-	loading    bool
+	conn        *db.Connection
+	width       int
+	height      int
+	err         error
+	stats       *db.ServerStats
+	loading     bool
 	autoRefresh bool
-	lastUpdate time.Time
+	lastUpdate  time.Time
+	statsMu     sync.RWMutex // Protects stats for background updates
+	stopChan    chan struct{}
 }
 
 // Styles for the dashboard
@@ -71,10 +74,11 @@ var (
 // NewDashboardView creates a new dashboard view
 func NewDashboardView(conn *db.Connection, width, height int) *DashboardView {
 	return &DashboardView{
-		conn:    conn,
-		width:   width,
-		height:  height,
-		loading: true,
+		conn:     conn,
+		width:    width,
+		height:   height,
+		loading:  true,
+		stopChan: make(chan struct{}),
 	}
 }
 
@@ -89,6 +93,34 @@ func (v *DashboardView) loadStats() tea.Msg {
 		return err
 	}
 	return statsLoadedMsg{stats: stats}
+}
+
+// loadStatsBackground fetches stats in a background goroutine
+func (v *DashboardView) loadStatsBackground() tea.Cmd {
+	return func() tea.Msg {
+		// Fetch stats in goroutine
+		resultChan := make(chan statsLoadedMsg, 1)
+		errChan := make(chan error, 1)
+
+		go func() {
+			stats, err := v.conn.GetServerStats()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			resultChan <- statsLoadedMsg{stats: stats}
+		}()
+
+		// Wait for result or stop signal
+		select {
+		case result := <-resultChan:
+			return result
+		case err := <-errChan:
+			return err
+		case <-v.stopChan:
+			return nil
+		}
+	}
 }
 
 type statsLoadedMsg struct {
@@ -112,6 +144,10 @@ func (v *DashboardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return v, nil
 		case "esc", "backspace", "q":
+			// Stop any background operations
+			v.autoRefresh = false
+			close(v.stopChan)
+			v.stopChan = make(chan struct{}) // Reset for potential reuse
 			return v, func() tea.Msg {
 				return SwitchViewMsg{View: "databases"}
 			}
@@ -122,7 +158,9 @@ func (v *DashboardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.height = msg.Height
 
 	case statsLoadedMsg:
+		v.statsMu.Lock()
 		v.stats = msg.stats
+		v.statsMu.Unlock()
 		v.loading = false
 		v.lastUpdate = time.Now()
 		if v.autoRefresh {
@@ -132,7 +170,8 @@ func (v *DashboardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if v.autoRefresh {
-			return v, v.loadStats
+			v.loading = true
+			return v, v.loadStatsBackground()
 		}
 		return v, nil
 
@@ -158,7 +197,12 @@ func (v *DashboardView) View() string {
 	b.WriteString(titleStyle.Render("Server Dashboard"))
 	b.WriteString("\n\n")
 
-	if v.loading && v.stats == nil {
+	// Thread-safe stats access
+	v.statsMu.RLock()
+	stats := v.stats
+	v.statsMu.RUnlock()
+
+	if v.loading && stats == nil {
 		b.WriteString("Loading statistics...\n")
 		return b.String()
 	}
@@ -168,7 +212,7 @@ func (v *DashboardView) View() string {
 		b.WriteString("\n\n")
 	}
 
-	if v.stats == nil {
+	if stats == nil {
 		b.WriteString(helpStyle.Render("Press 'r' to refresh"))
 		return b.String()
 	}
@@ -197,7 +241,7 @@ func (v *DashboardView) View() string {
 	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, storageInfo, "  ", perfInfo))
 
 	// Replication info for PostgreSQL
-	if v.stats.Replication != nil {
+	if stats.Replication != nil {
 		b.WriteString("\n\n")
 		b.WriteString(v.renderReplication(leftWidth + rightWidth + 2))
 	}

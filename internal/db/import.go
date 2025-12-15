@@ -27,7 +27,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -52,6 +54,8 @@ type ImportOptions struct {
 	SetVariables       map[string]string // Additional variables to set before import
 	UseNativeTool      bool              // Use pg_restore/mysql instead of built-in import
 	Jobs               int               // Number of parallel jobs for pg_restore (0 = default)
+	Parallel           int               // Number of parallel workers for batch execution (0 = sequential)
+	ContinueOnError    bool              // Continue processing even if errors occur
 }
 
 // ImportStats contains statistics about the import
@@ -256,75 +260,185 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 		}
 	}()
 
+	// Determine if parallel processing should be used
+	useParallel := opts.Parallel > 1
+
 	// Process SQL statements with batched transactions
 	var bytesRead atomic.Int64
 	bytesRead.Store(stats.BytesRead)
 
 	parser := newSQLParser(bufReader, opts.MaxMemory)
 	var batch []string
-	var statementsExecuted int64
+	var statementsExecuted atomic.Int64
+	var errorsEncountered atomic.Int64
 
-	for {
-		stmt, n, err := parser.NextStatement()
-		bytesRead.Add(int64(n))
+	if useParallel {
+		// Parallel batch execution
+		logging.Info("Starting parallel import with %d workers", opts.Parallel)
 
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return stats, fmt.Errorf("failed to parse SQL: %w", err)
-		}
+		executor := newParallelBatchExecutor(c, opts.Parallel)
+		executor.Start()
 
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" || stmt == ";" {
-			continue
-		}
+		var batchIndex int
+		var firstError error
+		var resultWg sync.WaitGroup
 
-		// Skip statements when renaming database
-		if opts.RenameDB != "" {
-			upperStmt := strings.ToUpper(stmt)
-			if strings.Contains(upperStmt, "CREATE DATABASE") ||
-				strings.HasPrefix(upperStmt, "USE ") {
+		// Start result collector
+		resultWg.Add(1)
+		go func() {
+			defer resultWg.Done()
+			for result := range executor.Results() {
+				if result.err != nil {
+					errorsEncountered.Add(1)
+					if opts.OnError != nil {
+						if !opts.OnError(result.err, result.failStmt) && firstError == nil {
+							firstError = result.err
+							// Don't stop - let other batches complete
+						}
+					} else if firstError == nil && !opts.ContinueOnError {
+						firstError = result.err
+					}
+				} else {
+					statementsExecuted.Add(int64(result.count))
+				}
+
+				// Report progress
+				if opts.OnProgress != nil {
+					opts.OnProgress(bytesRead.Load(), totalBytes, statementsExecuted.Load())
+				}
+			}
+		}()
+
+		// Parse and submit batches
+		for {
+			stmt, n, err := parser.NextStatement()
+			bytesRead.Add(int64(n))
+
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				executor.Stop()
+				resultWg.Wait()
+				return stats, fmt.Errorf("failed to parse SQL: %w", err)
+			}
+
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" || stmt == ";" {
 				continue
 			}
-		}
 
-		batch = append(batch, stmt)
-
-		// Execute batch
-		if len(batch) >= opts.BatchSize {
-			if err := c.executeBatch(batch); err != nil {
-				if opts.OnError != nil && opts.OnError(err, batch[len(batch)-1]) {
-					stats.ErrorsEncountered++
-					batch = batch[:0]
+			// Skip statements when renaming database
+			if opts.RenameDB != "" {
+				upperStmt := strings.ToUpper(stmt)
+				if strings.Contains(upperStmt, "CREATE DATABASE") ||
+					strings.HasPrefix(upperStmt, "USE ") {
 					continue
 				}
-				return stats, err
 			}
-			statementsExecuted += int64(len(batch))
-			batch = batch[:0]
 
-			// Report progress
-			if opts.OnProgress != nil {
-				opts.OnProgress(bytesRead.Load(), totalBytes, statementsExecuted)
+			batch = append(batch, stmt)
+
+			// Submit batch
+			if len(batch) >= opts.BatchSize {
+				executor.Submit(batchIndex, batch)
+				batchIndex++
+				batch = batch[:0]
 			}
 		}
-	}
 
-	// Execute remaining batch
-	if len(batch) > 0 {
-		if err := c.executeBatch(batch); err != nil {
-			if opts.OnError == nil || !opts.OnError(err, batch[len(batch)-1]) {
-				return stats, err
-			}
-			stats.ErrorsEncountered++
-		} else {
-			statementsExecuted += int64(len(batch))
+		// Submit remaining batch
+		if len(batch) > 0 {
+			executor.Submit(batchIndex, batch)
 		}
+
+		// Wait for all batches to complete
+		executor.Wait()
+		resultWg.Wait()
+
+		if firstError != nil && !opts.ContinueOnError {
+			return stats, firstError
+		}
+
+		stats.ErrorsEncountered = errorsEncountered.Load()
+		stats.StatementsExecuted = statementsExecuted.Load()
+
+	} else {
+		// Sequential batch execution (original logic)
+		var seqStatementsExecuted int64
+
+		for {
+			stmt, n, err := parser.NextStatement()
+			bytesRead.Add(int64(n))
+
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return stats, fmt.Errorf("failed to parse SQL: %w", err)
+			}
+
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" || stmt == ";" {
+				continue
+			}
+
+			// Skip statements when renaming database
+			if opts.RenameDB != "" {
+				upperStmt := strings.ToUpper(stmt)
+				if strings.Contains(upperStmt, "CREATE DATABASE") ||
+					strings.HasPrefix(upperStmt, "USE ") {
+					continue
+				}
+			}
+
+			batch = append(batch, stmt)
+
+			// Execute batch
+			if len(batch) >= opts.BatchSize {
+				if err := c.executeBatch(batch); err != nil {
+					if opts.OnError != nil && opts.OnError(err, batch[len(batch)-1]) {
+						stats.ErrorsEncountered++
+						batch = batch[:0]
+						continue
+					}
+					if opts.ContinueOnError {
+						stats.ErrorsEncountered++
+						batch = batch[:0]
+						continue
+					}
+					return stats, err
+				}
+				seqStatementsExecuted += int64(len(batch))
+				batch = batch[:0]
+
+				// Report progress
+				if opts.OnProgress != nil {
+					opts.OnProgress(bytesRead.Load(), totalBytes, seqStatementsExecuted)
+				}
+			}
+		}
+
+		// Execute remaining batch
+		if len(batch) > 0 {
+			if err := c.executeBatch(batch); err != nil {
+				if opts.OnError == nil || !opts.OnError(err, batch[len(batch)-1]) {
+					if !opts.ContinueOnError {
+						return stats, err
+					}
+					stats.ErrorsEncountered++
+				} else {
+					stats.ErrorsEncountered++
+				}
+			} else {
+				seqStatementsExecuted += int64(len(batch))
+			}
+		}
+
+		stats.StatementsExecuted = seqStatementsExecuted
 	}
 
 	stats.BytesRead = bytesRead.Load()
-	stats.StatementsExecuted = statementsExecuted
 	stats.Duration = time.Since(startTime)
 
 	return stats, nil
@@ -350,6 +464,136 @@ func (c *Connection) executeBatch(statements []string) error {
 	}
 
 	return nil
+}
+
+// batchTask represents a batch of statements to execute
+type batchTask struct {
+	index      int
+	statements []string
+}
+
+// batchResult represents the result of executing a batch
+type batchResult struct {
+	index    int
+	count    int
+	err      error
+	failStmt string
+}
+
+// parallelBatchExecutor manages concurrent batch execution
+type parallelBatchExecutor struct {
+	conn       *Connection
+	workers    int
+	tasks      chan batchTask
+	results    chan batchResult
+	wg         sync.WaitGroup
+	ctx        context.Context
+	cancel     context.CancelFunc
+	completed  atomic.Int64
+	errors     atomic.Int64
+}
+
+// newParallelBatchExecutor creates a new parallel batch executor
+func newParallelBatchExecutor(conn *Connection, workers int) *parallelBatchExecutor {
+	if workers <= 0 {
+		workers = runtime.NumCPU()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	return &parallelBatchExecutor{
+		conn:    conn,
+		workers: workers,
+		tasks:   make(chan batchTask, workers*2),
+		results: make(chan batchResult, workers*2),
+		ctx:     ctx,
+		cancel:  cancel,
+	}
+}
+
+// Start begins the worker goroutines
+func (pe *parallelBatchExecutor) Start() {
+	logging.Debug("Starting parallel batch executor with %d workers", pe.workers)
+
+	for i := 0; i < pe.workers; i++ {
+		pe.wg.Add(1)
+		go pe.worker(i)
+	}
+}
+
+// worker processes batch tasks
+func (pe *parallelBatchExecutor) worker(id int) {
+	defer pe.wg.Done()
+
+	for {
+		select {
+		case <-pe.ctx.Done():
+			return
+		case task, ok := <-pe.tasks:
+			if !ok {
+				return
+			}
+
+			logging.Debug("Worker %d executing batch %d with %d statements", id, task.index, len(task.statements))
+
+			err := pe.conn.executeBatch(task.statements)
+			result := batchResult{
+				index: task.index,
+				count: len(task.statements),
+			}
+
+			if err != nil {
+				result.err = err
+				if len(task.statements) > 0 {
+					result.failStmt = task.statements[len(task.statements)-1]
+				}
+				pe.errors.Add(1)
+			}
+
+			pe.completed.Add(1)
+
+			select {
+			case pe.results <- result:
+			case <-pe.ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+// Submit adds a batch to be processed
+func (pe *parallelBatchExecutor) Submit(index int, statements []string) {
+	// Make a copy of statements since the slice may be reused
+	stmtCopy := make([]string, len(statements))
+	copy(stmtCopy, statements)
+
+	select {
+	case pe.tasks <- batchTask{index: index, statements: stmtCopy}:
+	case <-pe.ctx.Done():
+	}
+}
+
+// Results returns the results channel
+func (pe *parallelBatchExecutor) Results() <-chan batchResult {
+	return pe.results
+}
+
+// Wait waits for all submitted tasks to complete
+func (pe *parallelBatchExecutor) Wait() {
+	close(pe.tasks)
+	pe.wg.Wait()
+	close(pe.results)
+}
+
+// Stop cancels all pending work
+func (pe *parallelBatchExecutor) Stop() {
+	pe.cancel()
+	pe.Wait()
+}
+
+// Progress returns (completed, errors)
+func (pe *parallelBatchExecutor) Progress() (int64, int64) {
+	return pe.completed.Load(), pe.errors.Load()
 }
 
 // sqlParser handles streaming SQL parsing with minimal memory usage
