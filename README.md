@@ -2,6 +2,8 @@
 
 A TUI and CLI tool for managing MariaDB and PostgreSQL databases. *"I'll never let your databases go~"*
 
+![YSM Screenshot](ysm_screenshot.png)
+
 ## Features
 
 ### Core Features
