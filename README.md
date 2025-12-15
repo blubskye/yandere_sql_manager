@@ -55,6 +55,11 @@ A TUI and CLI tool for managing MariaDB and PostgreSQL databases. *"I'll never l
 - **Batch Processing** - Optimized transaction batching for imports
 - **Progress Tracking** - Real-time progress for long operations
 
+### Customization
+- **Customizable Keybindings** - Remap any key to any action via TUI settings menu
+- Per-view keybinding configuration
+- Instant key rebinding with visual feedback
+
 ### Debugging
 - Verbose, debug, and trace logging levels
 - Stack traces on errors
@@ -109,7 +114,7 @@ ysm --profile local
 ysm -t postgres -H localhost -P 5432 -u postgres
 ```
 
-**TUI Key Bindings:**
+**TUI Key Bindings (Default):**
 | Key | Action |
 |-----|--------|
 | `Enter` | Select database/table |
@@ -124,8 +129,11 @@ ysm -t postgres -H localhost -P 5432 -u postgres
 | `s` | Open SQL query editor |
 | `v` | System variables |
 | `r` | Refresh |
+| `?` | Keybindings settings |
 | `Esc` | Go back |
 | `q` | Quit |
+
+**Note:** All keybindings are fully customizable! Press `?` in the TUI to open the keybindings settings~
 
 ### CLI Commands
 
@@ -378,6 +386,45 @@ Schedules are stored in `~/.config/ysm/schedules.json`:
   }
 }
 ```
+
+### Keybindings
+
+Keybindings are fully customizable and stored in `~/.config/ysm/keybindings.yaml`:
+
+```yaml
+# Global keybindings (work in all views)
+global:
+  quit: q
+  back: esc
+  select: enter
+  filter: /
+  refresh: r
+  up: up
+  down: down
+
+# View-specific keybindings
+databases:
+  new_database: n
+  dashboard: d
+  cluster: c
+  users: u
+  backup: b
+  import: i
+  export: e
+  query: s
+  variables: v
+  settings: "?"
+```
+
+**Available keys:** `a-z`, `0-9`, `enter`, `esc`, `tab`, `space`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `home`, `end`, `pgup`, `pgdown`, `f1-f12`, `ctrl+<key>`, `shift+<key>`, `alt+<key>`
+
+To customize keybindings:
+1. Press `?` in the TUI to open keybindings settings
+2. Navigate with arrow keys, press Enter to rebind
+3. Press the new key you want to assign
+4. Changes are saved automatically
+
+To reset all keybindings to defaults, delete `~/.config/ysm/keybindings.yaml` and restart YSM~
 
 ## Man Page
 

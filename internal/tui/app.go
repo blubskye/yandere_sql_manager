@@ -44,6 +44,7 @@ const (
 	ViewSetupWizard
 	ViewDashboard
 	ViewCluster
+	ViewKeybindings
 )
 
 // Model is the main application model
@@ -183,6 +184,9 @@ func (m *Model) switchViewString(viewName, database, table string) (tea.Model, t
 	case "cluster":
 		m.currentView = ViewCluster
 		m.views[ViewCluster] = views.NewClusterView(m.conn, m.width, m.height)
+	case "keybindings":
+		m.currentView = ViewKeybindings
+		m.views[ViewKeybindings] = views.NewKeybindingsView(m.width, m.height)
 	}
 
 	if view, ok := m.views[m.currentView]; ok {

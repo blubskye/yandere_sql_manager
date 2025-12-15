@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/blubskye/yandere_sql_manager/internal/config"
 	"github.com/blubskye/yandere_sql_manager/internal/db"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -37,12 +38,13 @@ type SwitchViewMsg struct {
 
 // DatabasesView shows the list of databases
 type DatabasesView struct {
-	conn      *db.Connection
-	list      list.Model
-	databases []db.Database
-	width     int
-	height    int
-	err       error
+	conn        *db.Connection
+	list        list.Model
+	databases   []db.Database
+	width       int
+	height      int
+	err         error
+	keybindings *config.KeyBindings
 }
 
 type dbItem struct {
@@ -70,11 +72,18 @@ func NewDatabasesView(conn *db.Connection, width, height int) *DatabasesView {
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = titleStyle
 
+	// Load keybindings
+	kb, _ := config.LoadKeyBindings()
+	if kb == nil {
+		kb = config.DefaultKeyBindings()
+	}
+
 	return &DatabasesView{
-		conn:   conn,
-		list:   l,
-		width:  width,
-		height: height,
+		conn:        conn,
+		list:        l,
+		width:       width,
+		height:      height,
+		keybindings: kb,
 	}
 }
 
@@ -95,22 +104,25 @@ func (v *DatabasesView) loadDatabases() tea.Msg {
 func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "enter":
-			if item, ok := v.list.SelectedItem().(dbItem); ok {
-				return v, func() tea.Msg {
-					return SwitchViewMsg{
-						View:     "tables",
-						Database: item.name,
+		key := msg.String()
+
+		// Handle keybindings when not filtering
+		if !v.list.SettingFilter() {
+			// Check against configured keybindings
+			if v.keybindings.IsKey("databases", key, config.ActionSelect) || key == "enter" {
+				if item, ok := v.list.SelectedItem().(dbItem); ok {
+					return v, func() tea.Msg {
+						return SwitchViewMsg{
+							View:     "tables",
+							Database: item.name,
+						}
 					}
 				}
 			}
-		case "q":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionQuit) {
 				return v, tea.Quit
 			}
-		case "i":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionImport) {
 				var dbName string
 				if item, ok := v.list.SelectedItem().(dbItem); ok {
 					dbName = item.name
@@ -122,8 +134,7 @@ func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "e":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionExport) {
 				if item, ok := v.list.SelectedItem().(dbItem); ok {
 					return v, func() tea.Msg {
 						return SwitchViewMsg{
@@ -133,8 +144,7 @@ func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "s":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionQuery) {
 				var dbName string
 				if item, ok := v.list.SelectedItem().(dbItem); ok {
 					dbName = item.name
@@ -146,44 +156,42 @@ func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-		case "r":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionRefresh) {
 				return v, v.loadDatabases
 			}
-		case "v":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionVariables) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "settings"}
 				}
 			}
-		case "u":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionUsers) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "users"}
 				}
 			}
-		case "b":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionBackup) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "backup"}
 				}
 			}
-		case "n":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionNewDatabase) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "setup"}
 				}
 			}
-		case "d":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionDashboard) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "dashboard"}
 				}
 			}
-		case "c":
-			if !v.list.SettingFilter() {
+			if v.keybindings.IsKey("databases", key, config.ActionCluster) {
 				return v, func() tea.Msg {
 					return SwitchViewMsg{View: "cluster"}
+				}
+			}
+			if v.keybindings.IsKey("databases", key, config.ActionSettings) {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "keybindings"}
 				}
 			}
 		}
@@ -223,7 +231,21 @@ func (v *DatabasesView) View() string {
 
 	b.WriteString(v.list.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter: Select | /: Filter | n: New | d: Stats | c: Cluster | u: Users | b: Backup | i: Import | e: Export | r: Refresh | q: Quit"))
+
+	// Build help text with actual configured keybindings
+	help := fmt.Sprintf("Enter: Select | /: Filter | %s: New | %s: Stats | %s: Cluster | %s: Users | %s: Backup | %s: Import | %s: Export | %s: Refresh | %s: Keys | %s: Quit",
+		v.keybindings.GetKey("databases", config.ActionNewDatabase),
+		v.keybindings.GetKey("databases", config.ActionDashboard),
+		v.keybindings.GetKey("databases", config.ActionCluster),
+		v.keybindings.GetKey("databases", config.ActionUsers),
+		v.keybindings.GetKey("databases", config.ActionBackup),
+		v.keybindings.GetKey("databases", config.ActionImport),
+		v.keybindings.GetKey("databases", config.ActionExport),
+		v.keybindings.GetKey("databases", config.ActionRefresh),
+		v.keybindings.GetKey("databases", config.ActionSettings),
+		v.keybindings.GetKey("databases", config.ActionQuit),
+	)
+	b.WriteString(helpStyle.Render(help))
 
 	return b.String()
 }
