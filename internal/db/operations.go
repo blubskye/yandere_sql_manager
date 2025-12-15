@@ -21,6 +21,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -462,12 +463,22 @@ func (c *Connection) formatValueForInsert(val interface{}) string {
 		return fmt.Sprintf("'%s'", c.EscapeString(s))
 	case string:
 		return fmt.Sprintf("'%s'", c.EscapeString(v))
-	case int64, int32, int, uint64, uint32, uint:
-		return fmt.Sprintf("%d", v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int:
+		return strconv.Itoa(v)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
 	case float64:
-		return fmt.Sprintf("%g", v)
+		return strconv.FormatFloat(v, 'g', -1, 64)
 	case float32:
-		return fmt.Sprintf("%g", v)
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
 	case bool:
 		if v {
 			return "1"

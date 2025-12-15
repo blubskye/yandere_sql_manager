@@ -70,6 +70,27 @@ func (c *Connection) ListDatabases() ([]Database, error) {
 	return databases, rows.Err()
 }
 
+// DatabaseExists checks if a database exists using a direct query (faster than ListDatabases)
+func (c *Connection) DatabaseExists(name string) (bool, error) {
+	var exists int
+	var err error
+
+	switch c.Config.Type {
+	case DatabaseTypePostgres:
+		err = c.DB.QueryRow("SELECT 1 FROM pg_database WHERE datname = $1", name).Scan(&exists)
+	default: // MariaDB/MySQL
+		err = c.DB.QueryRow("SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?", name).Scan(&exists)
+	}
+
+	if err != nil {
+		if err.Error() == "sql: no rows in result set" {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 // ListTables returns all tables in the current database
 func (c *Connection) ListTables() ([]Table, error) {
 	rows, err := c.DB.Query(c.Driver.ListTablesQuery())

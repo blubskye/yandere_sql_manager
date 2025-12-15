@@ -227,9 +227,7 @@ func ParallelExecute(workers int, tasks ...Task) []error {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
-	if workers > len(tasks) {
-		workers = len(tasks)
-	}
+	workers = min(workers, len(tasks))
 
 	errors := make([]error, len(tasks))
 	var wg sync.WaitGroup
@@ -260,9 +258,7 @@ func ParallelMap[T any, R any](workers int, items []T, fn func(T) (R, error)) ([
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
-	if workers > len(items) {
-		workers = len(items)
-	}
+	workers = min(workers, len(items))
 
 	results := make([]R, len(items))
 	errors := make([]error, len(items))

@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -343,7 +344,7 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 			if len(batch) >= opts.BatchSize {
 				executor.Submit(batchIndex, batch)
 				batchIndex++
-				batch = batch[:0]
+				clear(batch)
 			}
 		}
 
@@ -399,18 +400,18 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 				if err := c.executeBatch(batch); err != nil {
 					if opts.OnError != nil && opts.OnError(err, batch[len(batch)-1]) {
 						stats.ErrorsEncountered++
-						batch = batch[:0]
+						clear(batch)
 						continue
 					}
 					if opts.ContinueOnError {
 						stats.ErrorsEncountered++
-						batch = batch[:0]
+						clear(batch)
 						continue
 					}
 					return stats, err
 				}
 				seqStatementsExecuted += int64(len(batch))
-				batch = batch[:0]
+				clear(batch)
 
 				// Report progress
 				if opts.OnProgress != nil {
@@ -444,9 +445,8 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 	return stats, nil
 }
 
-// executeBatch executes a batch of statements in a transaction
-func (c *Connection) executeBatch(statements []string) error {
-	ctx := context.Background()
+// executeBatchCtx executes a batch of statements in a transaction with context
+func (c *Connection) executeBatchCtx(ctx context.Context, statements []string) error {
 	tx, err := c.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -464,6 +464,11 @@ func (c *Connection) executeBatch(statements []string) error {
 	}
 
 	return nil
+}
+
+// executeBatch executes a batch of statements in a transaction
+func (c *Connection) executeBatch(statements []string) error {
+	return c.executeBatchCtx(context.Background(), statements)
 }
 
 // batchTask represents a batch of statements to execute
@@ -536,7 +541,7 @@ func (pe *parallelBatchExecutor) worker(id int) {
 
 			logging.Debug("Worker %d executing batch %d with %d statements", id, task.index, len(task.statements))
 
-			err := pe.conn.executeBatch(task.statements)
+			err := pe.conn.executeBatchCtx(pe.ctx, task.statements)
 			result := batchResult{
 				index: task.index,
 				count: len(task.statements),
@@ -815,7 +820,7 @@ func (c *Connection) runPgRestore(opts ImportOptions, targetDB string, startTime
 
 	args := []string{
 		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-p", strconv.Itoa(c.Config.Port),
 		"-U", c.Config.User,
 		"-d", targetDB,
 	}
@@ -827,7 +832,7 @@ func (c *Connection) runPgRestore(opts ImportOptions, targetDB string, startTime
 
 	// Add parallel jobs
 	if opts.Jobs > 0 {
-		args = append(args, "-j", fmt.Sprintf("%d", opts.Jobs))
+		args = append(args, "-j", strconv.Itoa(opts.Jobs))
 	}
 
 	// Clean/drop objects before restore
@@ -839,7 +844,7 @@ func (c *Connection) runPgRestore(opts ImportOptions, targetDB string, startTime
 	args = append(args, opts.FilePath)
 
 	cmd := exec.Command("pg_restore", args...)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+	cmd.Env = append(os.Environ(), "PGPASSWORD="+c.Config.Password)
 
 	logging.Debug("Running: pg_restore %v", args)
 
@@ -867,9 +872,12 @@ func (c *Connection) runPgRestore(opts ImportOptions, targetDB string, startTime
 func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time.Time) (*ImportStats, error) {
 	stats := &ImportStats{}
 
+	portStr := strconv.Itoa(c.Config.Port)
+	pgEnv := append(os.Environ(), "PGPASSWORD="+c.Config.Password)
+
 	args := []string{
 		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-p", portStr,
 		"-U", c.Config.User,
 		"-d", targetDB,
 		"-f", opts.FilePath,
@@ -886,11 +894,11 @@ func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time
 		gzipCmd := exec.Command("gunzip", "-c", opts.FilePath)
 		psqlCmd := exec.Command("psql",
 			"-h", c.Config.Host,
-			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-p", portStr,
 			"-U", c.Config.User,
 			"-d", targetDB,
 		)
-		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		psqlCmd.Env = pgEnv
 
 		pipe, err := gzipCmd.StdoutPipe()
 		if err != nil {
@@ -913,11 +921,11 @@ func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time
 		xzCmd := exec.Command("xz", "-dc", opts.FilePath)
 		psqlCmd := exec.Command("psql",
 			"-h", c.Config.Host,
-			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-p", portStr,
 			"-U", c.Config.User,
 			"-d", targetDB,
 		)
-		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		psqlCmd.Env = pgEnv
 
 		pipe, err := xzCmd.StdoutPipe()
 		if err != nil {
@@ -940,11 +948,11 @@ func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time
 		zstdCmd := exec.Command("zstd", "-dc", opts.FilePath)
 		psqlCmd := exec.Command("psql",
 			"-h", c.Config.Host,
-			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-p", portStr,
 			"-U", c.Config.User,
 			"-d", targetDB,
 		)
-		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		psqlCmd.Env = pgEnv
 
 		pipe, err := zstdCmd.StdoutPipe()
 		if err != nil {
@@ -965,7 +973,7 @@ func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time
 	} else {
 		// Plain SQL file
 		cmd = exec.Command("psql", args...)
-		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+		cmd.Env = pgEnv
 
 		logging.Debug("Running: psql %v", args)
 

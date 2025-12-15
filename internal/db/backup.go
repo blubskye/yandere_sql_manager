@@ -176,9 +176,7 @@ func (c *Connection) CreateBackup(opts BackupOptions) (*BackupMetadata, error) {
 	if parallelWorkers < 0 {
 		parallelWorkers = runtime.NumCPU()
 	}
-	if parallelWorkers > len(databases) {
-		parallelWorkers = len(databases)
-	}
+	parallelWorkers = min(parallelWorkers, len(databases))
 
 	var totalSize int64
 
@@ -414,16 +412,11 @@ func (c *Connection) RestoreBackup(opts RestoreOptions) error {
 
 		// Drop existing if requested
 		if opts.DropExisting {
-			// Check if database exists
-			databases, err := c.ListDatabases()
-			if err == nil {
-				for _, d := range databases {
-					if d.Name == targetDB {
-						if _, err := c.DB.Exec(c.Driver.DropDatabaseQuery(targetDB)); err != nil {
-							return fmt.Errorf("failed to drop existing database %s: %w", targetDB, err)
-						}
-						break
-					}
+			// Check if database exists using direct query (faster than listing all databases)
+			exists, _ := c.DatabaseExists(targetDB)
+			if exists {
+				if _, err := c.DB.Exec(c.Driver.DropDatabaseQuery(targetDB)); err != nil {
+					return fmt.Errorf("failed to drop existing database %s: %w", targetDB, err)
 				}
 			}
 		}

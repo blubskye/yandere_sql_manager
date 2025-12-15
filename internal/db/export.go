@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -262,9 +263,7 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 	if parallelWorkers <= 0 {
 		parallelWorkers = 1 // Sequential by default
 	}
-	if parallelWorkers > len(tables) {
-		parallelWorkers = len(tables)
-	}
+	parallelWorkers = min(parallelWorkers, len(tables))
 
 	// Export tables - parallel or sequential
 	var totalRows int64
@@ -446,7 +445,7 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 	}
 
 	var rowCount int64
-	var values []string
+	values := make([]string, 0, batchSize)
 
 	// Quote column names for the INSERT statement
 	quotedColumns := make([]string, len(columns))
@@ -454,23 +453,24 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 		quotedColumns[i] = c.QuoteIdentifier(col)
 	}
 
+	// Preallocate scan buffers once - reuse for all rows (avoids N allocations)
+	valuePtrs := make([]interface{}, len(columns))
+	valueHolders := make([]interface{}, len(columns))
+	for i := range valuePtrs {
+		valuePtrs[i] = &valueHolders[i]
+	}
+	rowValues := make([]string, 0, len(columns))
+
 	// Write table comment
 	fmt.Fprintf(writer, "-- Dumping data for table %s\n\n", c.QuoteIdentifier(tableName))
 
 	for rows.Next() {
-		// Create slice to hold column values
-		valuePtrs := make([]interface{}, len(columns))
-		valueHolders := make([]interface{}, len(columns))
-		for i := range valuePtrs {
-			valuePtrs[i] = &valueHolders[i]
-		}
-
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return rowCount, err
 		}
 
-		// Format values
-		var rowValues []string
+		// Format values - reuse slice
+		rowValues = rowValues[:0]
 		for _, val := range valueHolders {
 			rowValues = append(rowValues, c.formatValueForExport(val))
 		}
@@ -484,7 +484,7 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 				c.QuoteIdentifier(tableName),
 				strings.Join(quotedColumns, ", "),
 				strings.Join(values, ",\n"))
-			values = values[:0]
+			clear(values)
 		}
 	}
 
@@ -529,6 +529,13 @@ func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string,
 	var completed atomic.Int64
 	var totalRows atomic.Int64
 
+	// Buffer pool for parallel workers - reduces allocations
+	bufPool := sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+
 	// Start workers
 	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
@@ -539,8 +546,9 @@ func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string,
 			for task := range tasks {
 				logging.Debug("Worker %d exporting table: %s", workerID, task.tableName)
 
-				var buf bytes.Buffer
-				bufWriter := bufio.NewWriterSize(&buf, opts.BufferSize)
+				buf := bufPool.Get().(*bytes.Buffer)
+				buf.Reset()
+				bufWriter := bufio.NewWriterSize(buf, opts.BufferSize)
 
 				// Write table header
 				fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n")
@@ -555,6 +563,7 @@ func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string,
 
 					createStmt, err := c.getCreateTable(task.tableName)
 					if err != nil {
+						bufPool.Put(buf)
 						results <- tableExportResult{
 							Index:     task.index,
 							TableName: task.tableName,
@@ -571,6 +580,7 @@ func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string,
 					var err error
 					rowCount, err = c.exportTableDataBuffered(bufWriter, task.tableName, opts.BatchSize)
 					if err != nil {
+						bufPool.Put(buf)
 						results <- tableExportResult{
 							Index:     task.index,
 							TableName: task.tableName,
@@ -582,10 +592,15 @@ func (c *Connection) exportTablesParallel(writer *bufio.Writer, tables []string,
 
 				bufWriter.Flush()
 
+				// Copy data before returning buffer to pool
+				data := make([]byte, buf.Len())
+				copy(data, buf.Bytes())
+				bufPool.Put(buf)
+
 				results <- tableExportResult{
 					Index:     task.index,
 					TableName: task.tableName,
-					Data:      buf.Bytes(),
+					Data:      data,
 					RowCount:  rowCount,
 				}
 
@@ -660,12 +675,22 @@ func (c *Connection) formatValueForExport(val interface{}) string {
 		return fmt.Sprintf("'%s'", c.EscapeString(s))
 	case string:
 		return fmt.Sprintf("'%s'", c.EscapeString(v))
-	case int64, int32, int, uint64, uint32, uint:
-		return fmt.Sprintf("%d", v)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int:
+		return strconv.Itoa(v)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
 	case float64:
-		return fmt.Sprintf("%g", v)
+		return strconv.FormatFloat(v, 'g', -1, 64)
 	case float32:
-		return fmt.Sprintf("%g", v)
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
 	case bool:
 		if c.Config.Type == DatabaseTypePostgres {
 			if v {
@@ -717,7 +742,7 @@ func (c *Connection) exportWithPgDump(opts ExportOptions) (*ExportStats, error) 
 	// Build pg_dump arguments
 	args := []string{
 		"-h", c.Config.Host,
-		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-p", strconv.Itoa(c.Config.Port),
 		"-U", c.Config.User,
 	}
 
@@ -795,9 +820,9 @@ func (c *Connection) exportWithMysqldump(opts ExportOptions) (*ExportStats, erro
 	// Build mysqldump arguments
 	args := []string{
 		"-h", c.Config.Host,
-		"-P", fmt.Sprintf("%d", c.Config.Port),
+		"-P", strconv.Itoa(c.Config.Port),
 		"-u", c.Config.User,
-		fmt.Sprintf("-p%s", c.Config.Password),
+		"-p" + c.Config.Password,
 		"--single-transaction",
 		"--routines",
 		"--triggers",

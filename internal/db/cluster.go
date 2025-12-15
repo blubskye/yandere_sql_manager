@@ -21,6 +21,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -269,7 +270,7 @@ func (c *Connection) GetMariaDBReplicationStatus() (*ReplicationStatus, error) {
 
 			if len(values) > 1 {
 				if pos, ok := values[1].(int64); ok {
-					status.Position = fmt.Sprintf("%d", pos)
+					status.Position = strconv.FormatInt(pos, 10)
 				}
 			}
 		}

@@ -4,7 +4,7 @@
 # Copyright (C) 2025 blubskye
 # License: GNU AGPL v3.0
 
-VERSION := 0.2.3
+VERSION := 0.2.4
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 

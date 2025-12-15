@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -235,7 +236,7 @@ func (l *Logger) log(level Level, format string, args ...interface{}) {
 		if ok {
 			b.WriteString(filepath.Base(file))
 			b.WriteString(":")
-			b.WriteString(fmt.Sprintf("%d", line))
+			b.WriteString(strconv.Itoa(line))
 			b.WriteString(" ")
 		}
 	}
