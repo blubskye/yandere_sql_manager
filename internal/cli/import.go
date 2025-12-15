@@ -30,20 +30,23 @@ import (
 )
 
 var (
-	importCreateDB      bool
-	importRename        string
-	importBatchSize     int
-	importContinue      bool
-	importNoFKChecks    bool
+	importCreateDB       bool
+	importRename         string
+	importBatchSize      int
+	importContinue       bool
+	importNoFKChecks     bool
 	importNoUniqueChecks bool
+	importUseNative      bool
+	importJobs           int
 )
 
 var importCmd = &cobra.Command{
-	Use:   "import <file.sql>",
+	Use:   "import <file>",
 	Short: "Import a SQL file into a database",
 	Long: `Import a SQL file into a database.
 
 Supports compressed files: .sql.gz, .sql.xz, .sql.zst
+PostgreSQL formats: .dump, .pgdump (uses pg_restore)
 Compression is auto-detected from file extension.
 
 Examples:
@@ -52,7 +55,12 @@ Examples:
   ysm import backup.sql.xz -d mydb --create
   ysm import backup.sql -d olddb --rename newdb
   ysm import large_backup.sql -d mydb --batch=500
-  ysm import backup.sql -d mydb --no-fk-checks`,
+  ysm import backup.sql -d mydb --no-fk-checks
+
+PostgreSQL native formats:
+  ysm import backup.dump -d mydb --create
+  ysm import backup.dump -d mydb --jobs=4
+  ysm import backup.sql -d mydb --native`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		filePath := args[0]
@@ -117,6 +125,8 @@ Examples:
 			BatchSize:           importBatchSize,
 			DisableForeignKeys:  importNoFKChecks,
 			DisableUniqueChecks: importNoUniqueChecks,
+			UseNativeTool:       importUseNative,
+			Jobs:                importJobs,
 			OnProgress: func(bytesRead, totalBytes int64, stmts int64) {
 				now := time.Now()
 				if now.Sub(lastProgress) < 100*time.Millisecond {
@@ -166,4 +176,6 @@ func init() {
 	importCmd.Flags().BoolVar(&importContinue, "continue", false, "Continue on errors")
 	importCmd.Flags().BoolVar(&importNoFKChecks, "no-fk-checks", false, "Disable foreign key checks during import")
 	importCmd.Flags().BoolVar(&importNoUniqueChecks, "no-unique-checks", false, "Disable unique checks during import")
+	importCmd.Flags().BoolVar(&importUseNative, "native", false, "Use native tools (pg_restore/psql for PostgreSQL)")
+	importCmd.Flags().IntVar(&importJobs, "jobs", 0, "Number of parallel jobs for pg_restore (PostgreSQL only)")
 }

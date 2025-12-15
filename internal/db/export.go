@@ -43,6 +43,16 @@ const (
 	CompressionZstd CompressionType = "zstd"
 )
 
+// DumpFormat represents the dump format for PostgreSQL
+type DumpFormat string
+
+const (
+	DumpFormatSQL    DumpFormat = "sql"    // Plain SQL (default, works for both MariaDB and PostgreSQL)
+	DumpFormatCustom DumpFormat = "custom" // PostgreSQL custom format (.dump)
+	DumpFormatTar    DumpFormat = "tar"    // PostgreSQL tar format
+	DumpFormatDir    DumpFormat = "dir"    // PostgreSQL directory format
+)
+
 // ExportOptions configures the export behavior
 type ExportOptions struct {
 	FilePath        string
@@ -56,6 +66,8 @@ type ExportOptions struct {
 	BatchSize       int             // Rows per INSERT batch (0 = default 1000)
 	IncludeVars     bool            // Include SET statements for session variables
 	IncludeVarsList []string        // Specific variables to include (empty = common variables)
+	Format          DumpFormat      // Dump format (PostgreSQL: sql, custom, tar, dir)
+	UseNativeTool   bool            // Use pg_dump/mysqldump instead of built-in export
 	OnProgress      func(currentTable string, tableNum, totalTables int, rowsExported int64)
 }
 
@@ -83,6 +95,29 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 
 	logging.Debug("Starting SQL export to: %s", opts.FilePath)
 	logging.Debug("Database: %s, Tables: %v", opts.Database, opts.Tables)
+
+	// Auto-detect format from file extension for PostgreSQL
+	if opts.Format == "" {
+		ext := strings.ToLower(filepath.Ext(opts.FilePath))
+		switch ext {
+		case ".dump", ".pgdump":
+			opts.Format = DumpFormatCustom
+		case ".tar":
+			opts.Format = DumpFormatTar
+		default:
+			opts.Format = DumpFormatSQL
+		}
+	}
+
+	// Use native tool for PostgreSQL non-SQL formats or if explicitly requested
+	if c.Config.Type == DatabaseTypePostgres && (opts.Format != DumpFormatSQL || opts.UseNativeTool) {
+		return c.exportWithPgDump(opts)
+	}
+
+	// Use native mysqldump if requested for MariaDB
+	if c.Config.Type == DatabaseTypeMariaDB && opts.UseNativeTool {
+		return c.exportWithMysqldump(opts)
+	}
 
 	// Set defaults - use larger buffers for better performance
 	if opts.BufferSize <= 0 {
@@ -502,4 +537,196 @@ func (c *Connection) ExportSQLWithCallback(filePath, database string, progress f
 			}
 		},
 	})
+}
+
+// exportWithPgDump exports a PostgreSQL database using pg_dump
+func (c *Connection) exportWithPgDump(opts ExportOptions) (*ExportStats, error) {
+	startTime := time.Now()
+	stats := &ExportStats{}
+
+	logging.Debug("Using pg_dump for export (format: %s)", opts.Format)
+
+	// Build pg_dump arguments
+	args := []string{
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+	}
+
+	// Set format
+	switch opts.Format {
+	case DumpFormatCustom:
+		args = append(args, "-Fc") // Custom format
+	case DumpFormatTar:
+		args = append(args, "-Ft") // Tar format
+	case DumpFormatDir:
+		args = append(args, "-Fd") // Directory format
+	default:
+		args = append(args, "-Fp") // Plain SQL
+	}
+
+	// Add options
+	if opts.NoData {
+		args = append(args, "--schema-only")
+	}
+	if opts.NoCreate {
+		args = append(args, "--data-only")
+	}
+	if opts.AddDropTable {
+		args = append(args, "--clean")
+	}
+
+	// Add specific tables
+	for _, table := range opts.Tables {
+		args = append(args, "-t", table)
+	}
+
+	// Output file
+	args = append(args, "-f", opts.FilePath)
+
+	// Database name
+	dbName := opts.Database
+	if dbName == "" {
+		dbName = c.Config.Database
+	}
+	args = append(args, dbName)
+
+	// Set PGPASSWORD environment variable
+	cmd := exec.Command("pg_dump", args...)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+	logging.Debug("Running: pg_dump %v", args)
+
+	// Run the command
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("pg_dump failed: %w\nOutput: %s", err, string(output))
+	}
+
+	// Get file stats
+	if info, err := os.Stat(opts.FilePath); err == nil {
+		stats.BytesWritten = info.Size()
+	}
+
+	stats.Duration = time.Since(startTime)
+	stats.OutputFile = opts.FilePath
+	stats.Compressed = opts.Format == DumpFormatCustom // Custom format has built-in compression
+
+	logging.Info("pg_dump export completed: %s", opts.FilePath)
+
+	return stats, nil
+}
+
+// exportWithMysqldump exports a MariaDB/MySQL database using mysqldump
+func (c *Connection) exportWithMysqldump(opts ExportOptions) (*ExportStats, error) {
+	startTime := time.Now()
+	stats := &ExportStats{}
+
+	logging.Debug("Using mysqldump for export")
+
+	// Build mysqldump arguments
+	args := []string{
+		"-h", c.Config.Host,
+		"-P", fmt.Sprintf("%d", c.Config.Port),
+		"-u", c.Config.User,
+		fmt.Sprintf("-p%s", c.Config.Password),
+		"--single-transaction",
+		"--routines",
+		"--triggers",
+	}
+
+	// Add options
+	if opts.NoData {
+		args = append(args, "--no-data")
+	}
+	if opts.NoCreate {
+		args = append(args, "--no-create-info")
+	}
+	if opts.AddDropTable {
+		args = append(args, "--add-drop-table")
+	}
+
+	// Database name
+	dbName := opts.Database
+	if dbName == "" {
+		dbName = c.Config.Database
+	}
+	args = append(args, dbName)
+
+	// Add specific tables
+	args = append(args, opts.Tables...)
+
+	logging.Debug("Running: mysqldump (arguments hidden for security)")
+
+	// Create output file
+	outFile, err := os.Create(opts.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer outFile.Close()
+
+	// Set up writer with optional compression
+	var writer io.Writer = outFile
+	var compressCmd *exec.Cmd
+
+	switch opts.Compression {
+	case CompressionGzip:
+		gzWriter := gzip.NewWriter(outFile)
+		defer gzWriter.Close()
+		writer = gzWriter
+		stats.Compressed = true
+	case CompressionXZ:
+		compressCmd = exec.Command("xz", "-c", "-6")
+		compressCmd.Stdout = outFile
+		stdin, err := compressCmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create xz pipe: %w", err)
+		}
+		if err := compressCmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start xz: %w", err)
+		}
+		writer = stdin
+		stats.Compressed = true
+		defer func() {
+			stdin.Close()
+			compressCmd.Wait()
+		}()
+	case CompressionZstd:
+		compressCmd = exec.Command("zstd", "-c", "-3")
+		compressCmd.Stdout = outFile
+		stdin, err := compressCmd.StdinPipe()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create zstd pipe: %w", err)
+		}
+		if err := compressCmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start zstd: %w", err)
+		}
+		writer = stdin
+		stats.Compressed = true
+		defer func() {
+			stdin.Close()
+			compressCmd.Wait()
+		}()
+	}
+
+	// Run mysqldump
+	cmd := exec.Command("mysqldump", args...)
+	cmd.Stdout = writer
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("mysqldump failed: %w", err)
+	}
+
+	// Get file stats
+	if info, err := os.Stat(opts.FilePath); err == nil {
+		stats.BytesWritten = info.Size()
+	}
+
+	stats.Duration = time.Since(startTime)
+	stats.OutputFile = opts.FilePath
+
+	logging.Info("mysqldump export completed: %s", opts.FilePath)
+
+	return stats, nil
 }

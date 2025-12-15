@@ -305,7 +305,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("YSM (Yandere SQL Manager) v0.2.1")
+		fmt.Println("YSM (Yandere SQL Manager) v0.2.2")
 		fmt.Println("\"I'll never let your databases go~\" <3")
 		fmt.Println()
 		fmt.Println("Copyright (C) 2025 blubskye")

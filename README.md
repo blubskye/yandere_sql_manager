@@ -156,6 +156,15 @@ ysm import backup.sql -d olddb --rename newdb
 
 # Disable foreign key checks during import
 ysm import backup.sql -d mydb --no-fk-checks
+
+# PostgreSQL native format import (.dump files use pg_restore)
+ysm import backup.dump -d mydb --create
+
+# PostgreSQL parallel restore (faster for large databases)
+ysm import backup.dump -d mydb --jobs=4
+
+# Force native tool (psql/pg_restore for PostgreSQL)
+ysm import backup.sql -d mydb --native
 ```
 
 #### Export
@@ -172,6 +181,18 @@ ysm export mydb --no-data
 
 # Export specific tables
 ysm export mydb --tables users,posts
+
+# PostgreSQL custom format (smaller, faster restore with pg_restore)
+ysm export mydb -o backup.dump --format=custom
+
+# PostgreSQL tar format
+ysm export mydb -o backup.tar --format=tar
+
+# PostgreSQL directory format (for parallel restore)
+ysm export mydb -o backup_dir --format=dir
+
+# Use native tools (pg_dump/mysqldump)
+ysm export mydb -o backup.sql --native
 ```
 
 #### Backup & Restore
@@ -343,6 +364,32 @@ YSM supports multiple compression formats for import/export:
 | zstd | `.zst` | Built-in support |
 
 Compression is auto-detected from file extension.
+
+## PostgreSQL Native Formats
+
+For PostgreSQL, YSM supports native dump formats using `pg_dump` and `pg_restore`:
+
+| Format | Extension | Notes |
+|--------|-----------|-------|
+| Plain SQL | `.sql` | Default, compatible with any PostgreSQL version |
+| Custom | `.dump`, `.pgdump` | Compressed, fast restore with `pg_restore` |
+| Tar | `.tar` | Archive format, supports parallel restore |
+| Directory | `<dir>/` | Directory of files, best for parallel restore |
+
+**Benefits of custom format (.dump):**
+- Built-in compression (smaller file sizes)
+- Selective restore (restore specific tables/schemas)
+- Parallel restore with `--jobs=N` flag
+- Auto-detected from extension or use `--format=custom`
+
+**Example workflow:**
+```bash
+# Export PostgreSQL database in custom format
+ysm export mydb -o backup.dump --format=custom
+
+# Restore with parallel processing
+ysm import backup.dump -d mydb --create --jobs=4
+```
 
 ## Configuration
 

@@ -50,6 +50,8 @@ type ImportOptions struct {
 	DisableForeignKeys bool              // Disable foreign key checks during import
 	DisableUniqueChecks bool             // Disable unique checks during import
 	SetVariables       map[string]string // Additional variables to set before import
+	UseNativeTool      bool              // Use pg_restore/mysql instead of built-in import
+	Jobs               int               // Number of parallel jobs for pg_restore (0 = default)
 }
 
 // ImportStats contains statistics about the import
@@ -75,6 +77,20 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 	stats := &ImportStats{}
 
 	logging.Debug("Starting SQL import from: %s", opts.FilePath)
+
+	// Detect if this is a PostgreSQL dump file
+	ext := strings.ToLower(filepath.Ext(opts.FilePath))
+	baseName := strings.ToLower(filepath.Base(opts.FilePath))
+
+	isPgDump := ext == ".dump" || ext == ".pgdump" ||
+		strings.HasSuffix(baseName, ".dump.gz") ||
+		strings.HasSuffix(baseName, ".dump.xz") ||
+		strings.HasSuffix(baseName, ".dump.zst")
+
+	// Use pg_restore for PostgreSQL dump files
+	if c.Config.Type == DatabaseTypePostgres && (isPgDump || opts.UseNativeTool) {
+		return c.importWithPgRestore(opts)
+	}
 
 	// Get file size to determine optimal buffer size
 	fileSize, _ := buffer.GetFileSize(opts.FilePath)
@@ -114,10 +130,10 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 
 	// Create reader based on file extension (handle compression)
 	var reader io.Reader
-	ext := strings.ToLower(filepath.Ext(opts.FilePath))
+	ext = strings.ToLower(filepath.Ext(opts.FilePath))
 
 	// Handle double extensions like .sql.xz
-	baseName := filepath.Base(opts.FilePath)
+	baseName = filepath.Base(opts.FilePath)
 	if strings.HasSuffix(strings.ToLower(baseName), ".sql.xz") {
 		ext = ".xz"
 	} else if strings.HasSuffix(strings.ToLower(baseName), ".sql.gz") {
@@ -485,4 +501,243 @@ func (c *Connection) ImportSQLWithCallback(filePath, database string, progress f
 			}
 		},
 	})
+}
+
+// importWithPgRestore imports a PostgreSQL dump using pg_restore
+func (c *Connection) importWithPgRestore(opts ImportOptions) (*ImportStats, error) {
+	startTime := time.Now()
+
+	logging.Debug("Using pg_restore for import: %s", opts.FilePath)
+
+	// Determine target database
+	targetDB := opts.Database
+	if opts.RenameDB != "" {
+		targetDB = opts.RenameDB
+	}
+	if targetDB == "" {
+		targetDB = c.Config.Database
+	}
+
+	// Create database if requested
+	if opts.CreateDB && targetDB != "" {
+		var exists bool
+		c.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", targetDB).Scan(&exists)
+		if !exists {
+			logging.Debug("Creating database: %s", targetDB)
+			_, err := c.DB.Exec(c.Driver.CreateDatabaseQuery(targetDB))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create database: %w", err)
+			}
+		}
+	}
+
+	// Check if this is a plain SQL file or a custom format dump
+	ext := strings.ToLower(filepath.Ext(opts.FilePath))
+	baseName := strings.ToLower(filepath.Base(opts.FilePath))
+
+	// Detect file format by checking magic bytes
+	isCustomFormat := false
+	if file, err := os.Open(opts.FilePath); err == nil {
+		header := make([]byte, 5)
+		if n, _ := file.Read(header); n >= 5 {
+			// PostgreSQL custom format starts with "PGDMP"
+			if string(header) == "PGDMP" {
+				isCustomFormat = true
+			}
+		}
+		file.Close()
+	}
+
+	// Also check file extension
+	if ext == ".dump" || ext == ".pgdump" ||
+		strings.HasSuffix(baseName, ".dump.gz") ||
+		strings.HasSuffix(baseName, ".dump.xz") ||
+		strings.HasSuffix(baseName, ".dump.zst") {
+		isCustomFormat = true
+	}
+
+	if isCustomFormat {
+		// Use pg_restore for custom format
+		return c.runPgRestore(opts, targetDB, startTime)
+	}
+
+	// For plain SQL files, use psql
+	return c.runPsql(opts, targetDB, startTime)
+}
+
+// runPgRestore runs pg_restore for custom format dumps
+func (c *Connection) runPgRestore(opts ImportOptions, targetDB string, startTime time.Time) (*ImportStats, error) {
+	stats := &ImportStats{}
+
+	args := []string{
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+		"-d", targetDB,
+	}
+
+	// Add options
+	if opts.DisableForeignKeys {
+		args = append(args, "--disable-triggers")
+	}
+
+	// Add parallel jobs
+	if opts.Jobs > 0 {
+		args = append(args, "-j", fmt.Sprintf("%d", opts.Jobs))
+	}
+
+	// Clean/drop objects before restore
+	if opts.CreateDB {
+		args = append(args, "--clean", "--if-exists")
+	}
+
+	// Add the file to restore
+	args = append(args, opts.FilePath)
+
+	cmd := exec.Command("pg_restore", args...)
+	cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+	logging.Debug("Running: pg_restore %v", args)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// pg_restore returns non-zero for warnings too, check if critical
+		if !strings.Contains(string(output), "errors ignored") {
+			return nil, fmt.Errorf("pg_restore failed: %w\nOutput: %s", err, string(output))
+		}
+		logging.Warn("pg_restore completed with warnings: %s", string(output))
+	}
+
+	// Get file size
+	if info, err := os.Stat(opts.FilePath); err == nil {
+		stats.BytesRead = info.Size()
+	}
+
+	stats.Duration = time.Since(startTime)
+	logging.Info("pg_restore import completed")
+
+	return stats, nil
+}
+
+// runPsql runs psql for plain SQL imports
+func (c *Connection) runPsql(opts ImportOptions, targetDB string, startTime time.Time) (*ImportStats, error) {
+	stats := &ImportStats{}
+
+	args := []string{
+		"-h", c.Config.Host,
+		"-p", fmt.Sprintf("%d", c.Config.Port),
+		"-U", c.Config.User,
+		"-d", targetDB,
+		"-f", opts.FilePath,
+	}
+
+	// Handle compressed files
+	ext := strings.ToLower(filepath.Ext(opts.FilePath))
+	baseName := strings.ToLower(filepath.Base(opts.FilePath))
+
+	var cmd *exec.Cmd
+
+	if strings.HasSuffix(baseName, ".sql.gz") || ext == ".gz" {
+		// Pipe through gunzip
+		gzipCmd := exec.Command("gunzip", "-c", opts.FilePath)
+		psqlCmd := exec.Command("psql",
+			"-h", c.Config.Host,
+			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-U", c.Config.User,
+			"-d", targetDB,
+		)
+		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+		pipe, err := gzipCmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pipe: %w", err)
+		}
+		psqlCmd.Stdin = pipe
+
+		if err := gzipCmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start gunzip: %w", err)
+		}
+
+		output, err := psqlCmd.CombinedOutput()
+		gzipCmd.Wait()
+
+		if err != nil {
+			return nil, fmt.Errorf("psql failed: %w\nOutput: %s", err, string(output))
+		}
+	} else if strings.HasSuffix(baseName, ".sql.xz") || ext == ".xz" {
+		// Pipe through xz
+		xzCmd := exec.Command("xz", "-dc", opts.FilePath)
+		psqlCmd := exec.Command("psql",
+			"-h", c.Config.Host,
+			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-U", c.Config.User,
+			"-d", targetDB,
+		)
+		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+		pipe, err := xzCmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pipe: %w", err)
+		}
+		psqlCmd.Stdin = pipe
+
+		if err := xzCmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start xz: %w", err)
+		}
+
+		output, err := psqlCmd.CombinedOutput()
+		xzCmd.Wait()
+
+		if err != nil {
+			return nil, fmt.Errorf("psql failed: %w\nOutput: %s", err, string(output))
+		}
+	} else if strings.HasSuffix(baseName, ".sql.zst") || ext == ".zst" {
+		// Pipe through zstd
+		zstdCmd := exec.Command("zstd", "-dc", opts.FilePath)
+		psqlCmd := exec.Command("psql",
+			"-h", c.Config.Host,
+			"-p", fmt.Sprintf("%d", c.Config.Port),
+			"-U", c.Config.User,
+			"-d", targetDB,
+		)
+		psqlCmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+		pipe, err := zstdCmd.StdoutPipe()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create pipe: %w", err)
+		}
+		psqlCmd.Stdin = pipe
+
+		if err := zstdCmd.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start zstd: %w", err)
+		}
+
+		output, err := psqlCmd.CombinedOutput()
+		zstdCmd.Wait()
+
+		if err != nil {
+			return nil, fmt.Errorf("psql failed: %w\nOutput: %s", err, string(output))
+		}
+	} else {
+		// Plain SQL file
+		cmd = exec.Command("psql", args...)
+		cmd.Env = append(os.Environ(), fmt.Sprintf("PGPASSWORD=%s", c.Config.Password))
+
+		logging.Debug("Running: psql %v", args)
+
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("psql failed: %w\nOutput: %s", err, string(output))
+		}
+	}
+
+	// Get file size
+	if info, err := os.Stat(opts.FilePath); err == nil {
+		stats.BytesRead = info.Size()
+	}
+
+	stats.Duration = time.Since(startTime)
+	logging.Info("psql import completed")
+
+	return stats, nil
 }

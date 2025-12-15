@@ -37,6 +37,8 @@ var (
 	exportCompress    string
 	exportBatchSize   int
 	exportIncludeVars bool
+	exportFormat      string
+	exportUseNative   bool
 )
 
 var exportCmd = &cobra.Command{
@@ -45,6 +47,7 @@ var exportCmd = &cobra.Command{
 	Long: `Export a database to a SQL file.
 
 Supports compression: gzip (.gz), xz (.xz), zstd (.zst)
+PostgreSQL formats: custom (.dump), tar (.tar), directory
 Compression is auto-detected from output filename or can be specified with --compress.
 
 Examples:
@@ -54,7 +57,13 @@ Examples:
   ysm export mydb -o backup.sql.xz --compress=xz
   ysm export mydb --no-data
   ysm export mydb --tables users,posts
-  ysm export mydb --include-vars`,
+  ysm export mydb --include-vars
+
+PostgreSQL native formats:
+  ysm export mydb -o backup.dump --format=custom
+  ysm export mydb -o backup.tar --format=tar
+  ysm export mydb -o backup_dir --format=dir
+  ysm export mydb -o backup.sql --native`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dbName := args[0]
@@ -97,6 +106,23 @@ Examples:
 			}
 		}
 
+		// Determine format (for PostgreSQL)
+		var format db.DumpFormat
+		if exportFormat != "" {
+			switch strings.ToLower(exportFormat) {
+			case "sql", "plain":
+				format = db.DumpFormatSQL
+			case "custom", "c":
+				format = db.DumpFormatCustom
+			case "tar", "t":
+				format = db.DumpFormatTar
+			case "dir", "directory", "d":
+				format = db.DumpFormatDir
+			default:
+				return fmt.Errorf("unknown format: %s (use: sql, custom, tar, dir)", exportFormat)
+			}
+		}
+
 		// Show compression info
 		compressionName := "none"
 		if compression != "" {
@@ -118,15 +144,17 @@ Examples:
 		fmt.Printf("Compression: %s\n\n", compressionName)
 
 		opts := db.ExportOptions{
-			FilePath:     output,
-			Database:     dbName,
-			Tables:       exportTables,
-			NoData:       exportNoData,
-			NoCreate:     exportNoCreate,
-			AddDropTable: exportAddDrop,
-			Compression:  compression,
-			BatchSize:    exportBatchSize,
-			IncludeVars:  exportIncludeVars,
+			FilePath:      output,
+			Database:      dbName,
+			Tables:        exportTables,
+			NoData:        exportNoData,
+			NoCreate:      exportNoCreate,
+			AddDropTable:  exportAddDrop,
+			Compression:   compression,
+			BatchSize:     exportBatchSize,
+			IncludeVars:   exportIncludeVars,
+			Format:        format,
+			UseNativeTool: exportUseNative,
 			OnProgress: func(currentTable string, tableNum, totalTables int, rowsExported int64) {
 				fmt.Printf("\r[%d/%d] Exporting: %-40s (%d rows)", tableNum, totalTables, currentTable, rowsExported)
 			},
@@ -176,4 +204,6 @@ func init() {
 	exportCmd.Flags().StringVar(&exportCompress, "compress", "", "Compression: gzip, xz, zstd, none (auto-detect from filename)")
 	exportCmd.Flags().IntVar(&exportBatchSize, "batch", 1000, "Rows per INSERT batch")
 	exportCmd.Flags().BoolVar(&exportIncludeVars, "include-vars", false, "Include session variable SET statements in export")
+	exportCmd.Flags().StringVar(&exportFormat, "format", "", "PostgreSQL format: sql, custom, tar, dir (auto-detect from extension)")
+	exportCmd.Flags().BoolVar(&exportUseNative, "native", false, "Use native tools (pg_dump for PostgreSQL, mysqldump for MariaDB)")
 }
