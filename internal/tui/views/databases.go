@@ -156,6 +156,36 @@ func (v *DatabasesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return SwitchViewMsg{View: "settings"}
 				}
 			}
+		case "u":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "users"}
+				}
+			}
+		case "b":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "backup"}
+				}
+			}
+		case "n":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "setup"}
+				}
+			}
+		case "d":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "dashboard"}
+				}
+			}
+		case "c":
+			if !v.list.SettingFilter() {
+				return v, func() tea.Msg {
+					return SwitchViewMsg{View: "cluster"}
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -193,7 +223,7 @@ func (v *DatabasesView) View() string {
 
 	b.WriteString(v.list.View())
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter: Select | /: Filter | i: Import | e: Export | s: SQL | v: Variables | r: Refresh | q: Quit"))
+	b.WriteString(helpStyle.Render("Enter: Select | /: Filter | n: New | d: Stats | c: Cluster | u: Users | b: Backup | i: Import | e: Export | r: Refresh | q: Quit"))
 
 	return b.String()
 }

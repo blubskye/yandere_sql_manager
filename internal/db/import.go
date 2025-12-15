@@ -30,6 +30,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/blubskye/yandere_sql_manager/internal/buffer"
+	"github.com/blubskye/yandere_sql_manager/internal/logging"
 )
 
 // ImportOptions configures the import behavior
@@ -71,15 +74,28 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 	startTime := time.Now()
 	stats := &ImportStats{}
 
-	// Set defaults
+	logging.Debug("Starting SQL import from: %s", opts.FilePath)
+
+	// Get file size to determine optimal buffer size
+	fileSize, _ := buffer.GetFileSize(opts.FilePath)
+	logging.Debug("File size: %d bytes", fileSize)
+
+	// Set defaults based on file size
 	if opts.BufferSize <= 0 {
-		opts.BufferSize = 64 * 1024 // 64KB buffer
+		opts.BufferSize = buffer.RecommendedBufferSize(fileSize)
+		logging.Debug("Using auto-detected buffer size: %d bytes", opts.BufferSize)
 	}
 	if opts.MaxMemory <= 0 {
 		opts.MaxMemory = 64 * 1024 * 1024 // 64MB max statement size
 	}
 	if opts.BatchSize <= 0 {
-		opts.BatchSize = 100 // 100 statements per transaction
+		// Larger batches for larger files
+		if fileSize > 100*1024*1024 {
+			opts.BatchSize = 500 // 500 statements per transaction for large files
+		} else {
+			opts.BatchSize = 100 // 100 statements per transaction
+		}
+		logging.Debug("Using batch size: %d statements", opts.BatchSize)
 	}
 
 	// Open file and detect compression
@@ -178,9 +194,22 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 
 	// Create database if requested
 	if opts.CreateDB && targetDB != "" {
-		_, err := c.DB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", targetDB))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create database: %w", err)
+		if c.Config.Type == DatabaseTypePostgres {
+			// PostgreSQL: Check if database exists first
+			var exists bool
+			c.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)", targetDB).Scan(&exists)
+			if !exists {
+				_, err := c.DB.Exec(c.Driver.CreateDatabaseQuery(targetDB))
+				if err != nil {
+					return nil, fmt.Errorf("failed to create database: %w", err)
+				}
+			}
+		} else {
+			// MariaDB: Use IF NOT EXISTS
+			_, err := c.DB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", c.QuoteIdentifier(targetDB)))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create database: %w", err)
+			}
 		}
 	}
 
@@ -194,14 +223,12 @@ func (c *Connection) ImportSQLWithStats(opts ImportOptions) (*ImportStats, error
 	// Apply import-specific variable settings
 	var restoreVars []string
 	if opts.DisableForeignKeys {
-		c.DB.Exec("SET @old_foreign_key_checks = @@foreign_key_checks")
-		c.DB.Exec("SET foreign_key_checks = 0")
-		restoreVars = append(restoreVars, "SET foreign_key_checks = @old_foreign_key_checks")
+		c.DB.Exec(c.Driver.DisableForeignKeysSQL())
+		restoreVars = append(restoreVars, c.Driver.EnableForeignKeysSQL())
 	}
 	if opts.DisableUniqueChecks {
-		c.DB.Exec("SET @old_unique_checks = @@unique_checks")
-		c.DB.Exec("SET unique_checks = 0")
-		restoreVars = append(restoreVars, "SET unique_checks = @old_unique_checks")
+		c.DB.Exec(c.Driver.DisableUniqueChecksSQL())
+		restoreVars = append(restoreVars, c.Driver.EnableUniqueChecksSQL())
 	}
 	for name, value := range opts.SetVariables {
 		c.SetVariable(name, value, false)

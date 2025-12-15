@@ -28,6 +28,9 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/blubskye/yandere_sql_manager/internal/buffer"
+	"github.com/blubskye/yandere_sql_manager/internal/logging"
 )
 
 // CompressionType represents supported compression formats
@@ -78,12 +81,17 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 	startTime := time.Now()
 	stats := &ExportStats{}
 
-	// Set defaults
+	logging.Debug("Starting SQL export to: %s", opts.FilePath)
+	logging.Debug("Database: %s, Tables: %v", opts.Database, opts.Tables)
+
+	// Set defaults - use larger buffers for better performance
 	if opts.BufferSize <= 0 {
-		opts.BufferSize = 64 * 1024 // 64KB buffer
+		opts.BufferSize = buffer.LargeBufferSize // 8MB buffer for exports
+		logging.Debug("Using buffer size: %d bytes", opts.BufferSize)
 	}
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 1000 // 1000 rows per INSERT
+		logging.Debug("Using batch size: %d rows", opts.BatchSize)
 	}
 
 	if opts.Database != "" {
@@ -169,6 +177,7 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 	// Write header
 	fmt.Fprintf(bufWriter, "-- YSM (Yandere SQL Manager) Database Export\n")
 	fmt.Fprintf(bufWriter, "-- Database: %s\n", opts.Database)
+	fmt.Fprintf(bufWriter, "-- Type: %s\n", c.Config.Type)
 	fmt.Fprintf(bufWriter, "-- Generated: %s\n", time.Now().Format(time.RFC3339))
 	fmt.Fprintf(bufWriter, "-- \"I'll never let your databases go~\"\n\n")
 
@@ -177,23 +186,24 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 		fmt.Fprintf(bufWriter, "-- Session Variables\n")
 		varList := opts.IncludeVarsList
 		if len(varList) == 0 {
-			varList = CommonVariables
+			varList = c.Driver.CommonVariables()
 		}
 		for _, varName := range varList {
 			value, err := c.GetVariable(varName)
 			if err == nil && value != "" {
-				fmt.Fprintf(bufWriter, "SET @saved_%s = @@%s;\n", varName, varName)
-				fmt.Fprintf(bufWriter, "SET %s = '%s';\n", varName, escapeString(value))
+				if c.Config.Type == DatabaseTypePostgres {
+					fmt.Fprintf(bufWriter, "SET %s = '%s';\n", varName, c.EscapeString(value))
+				} else {
+					fmt.Fprintf(bufWriter, "SET @saved_%s = @@%s;\n", varName, varName)
+					fmt.Fprintf(bufWriter, "SET %s = '%s';\n", varName, c.EscapeString(value))
+				}
 			}
 		}
 		fmt.Fprintf(bufWriter, "\n")
 	}
 
-	fmt.Fprintf(bufWriter, "SET FOREIGN_KEY_CHECKS=0;\n")
-	fmt.Fprintf(bufWriter, "SET SQL_MODE = \"NO_AUTO_VALUE_ON_ZERO\";\n")
-	fmt.Fprintf(bufWriter, "SET AUTOCOMMIT = 0;\n")
-	fmt.Fprintf(bufWriter, "START TRANSACTION;\n")
-	fmt.Fprintf(bufWriter, "SET time_zone = \"+00:00\";\n\n")
+	// Write database-specific header
+	fmt.Fprintf(bufWriter, "%s\n", c.Driver.ExportHeader())
 
 	// Get tables to export
 	tables := opts.Tables
@@ -215,13 +225,13 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 		}
 
 		fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n")
-		fmt.Fprintf(bufWriter, "-- Table structure for table `%s`\n", tableName)
+		fmt.Fprintf(bufWriter, "-- Table structure for table %s\n", c.QuoteIdentifier(tableName))
 		fmt.Fprintf(bufWriter, "-- --------------------------------------------------------\n\n")
 
 		// Export table structure
 		if !opts.NoCreate {
 			if opts.AddDropTable {
-				fmt.Fprintf(bufWriter, "DROP TABLE IF EXISTS `%s`;\n", tableName)
+				fmt.Fprintf(bufWriter, "DROP TABLE IF EXISTS %s;\n", c.QuoteIdentifier(tableName))
 			}
 
 			createStmt, err := c.getCreateTable(tableName)
@@ -243,8 +253,8 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 		stats.TablesExported++
 	}
 
-	fmt.Fprintf(bufWriter, "\nCOMMIT;\n")
-	fmt.Fprintf(bufWriter, "SET FOREIGN_KEY_CHECKS=1;\n")
+	// Write database-specific footer
+	fmt.Fprintf(bufWriter, "\n%s", c.Driver.ExportFooter())
 
 	// Ensure everything is flushed
 	bufWriter.Flush()
@@ -262,17 +272,104 @@ func (c *Connection) ExportSQLWithStats(opts ExportOptions) (*ExportStats, error
 }
 
 func (c *Connection) getCreateTable(tableName string) (string, error) {
+	if c.Config.Type == DatabaseTypePostgres {
+		// PostgreSQL: Build CREATE TABLE from information_schema
+		return c.buildCreateTablePostgres(tableName)
+	}
+
+	// MariaDB: Use SHOW CREATE TABLE
 	var name, createStmt string
-	err := c.DB.QueryRow(fmt.Sprintf("SHOW CREATE TABLE `%s`", tableName)).Scan(&name, &createStmt)
+	err := c.DB.QueryRow(c.Driver.GetCreateTableQuery(tableName)).Scan(&name, &createStmt)
 	if err != nil {
 		return "", err
 	}
 	return createStmt, nil
 }
 
+// buildCreateTablePostgres builds a CREATE TABLE statement from information_schema
+func (c *Connection) buildCreateTablePostgres(tableName string) (string, error) {
+	// Get columns
+	rows, err := c.DB.Query(`
+		SELECT column_name, data_type, character_maximum_length,
+		       is_nullable, column_default, udt_name
+		FROM information_schema.columns
+		WHERE table_name = $1 AND table_schema = 'public'
+		ORDER BY ordinal_position`, tableName)
+	if err != nil {
+		return "", fmt.Errorf("failed to get columns: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var colName, dataType, isNullable string
+		var charMaxLen *int64
+		var colDefault, udtName *string
+
+		if err := rows.Scan(&colName, &dataType, &charMaxLen, &isNullable, &colDefault, &udtName); err != nil {
+			return "", err
+		}
+
+		colDef := fmt.Sprintf("  %s ", c.QuoteIdentifier(colName))
+
+		// Build type with length if applicable
+		if charMaxLen != nil && *charMaxLen > 0 {
+			colDef += fmt.Sprintf("%s(%d)", dataType, *charMaxLen)
+		} else if udtName != nil && *udtName != "" && dataType == "USER-DEFINED" {
+			colDef += *udtName
+		} else {
+			colDef += dataType
+		}
+
+		// Add NOT NULL if applicable
+		if isNullable == "NO" {
+			colDef += " NOT NULL"
+		}
+
+		// Add default if applicable
+		if colDefault != nil && *colDefault != "" {
+			// Skip nextval defaults (serial columns)
+			if !strings.HasPrefix(*colDefault, "nextval(") {
+				colDef += fmt.Sprintf(" DEFAULT %s", *colDefault)
+			}
+		}
+
+		columns = append(columns, colDef)
+	}
+
+	if len(columns) == 0 {
+		return "", fmt.Errorf("no columns found for table %s", tableName)
+	}
+
+	// Get primary key
+	pkRows, err := c.DB.Query(`
+		SELECT a.attname
+		FROM pg_index i
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+		WHERE i.indrelid = $1::regclass AND i.indisprimary`, tableName)
+	if err == nil {
+		defer pkRows.Close()
+		var pkCols []string
+		for pkRows.Next() {
+			var colName string
+			pkRows.Scan(&colName)
+			pkCols = append(pkCols, c.QuoteIdentifier(colName))
+		}
+		if len(pkCols) > 0 {
+			columns = append(columns, fmt.Sprintf("  PRIMARY KEY (%s)", strings.Join(pkCols, ", ")))
+		}
+	}
+
+	createStmt := fmt.Sprintf("CREATE TABLE %s (\n%s\n)",
+		c.QuoteIdentifier(tableName),
+		strings.Join(columns, ",\n"))
+
+	return createStmt, nil
+}
+
 // exportTableDataBuffered exports table data with batched INSERTs
 func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName string, batchSize int) (int64, error) {
-	rows, err := c.DB.Query(fmt.Sprintf("SELECT * FROM `%s`", tableName))
+	rows, err := c.DB.Query(fmt.Sprintf("SELECT * FROM %s", c.QuoteIdentifier(tableName)))
 	if err != nil {
 		return 0, err
 	}
@@ -290,8 +387,14 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 	var rowCount int64
 	var values []string
 
+	// Quote column names for the INSERT statement
+	quotedColumns := make([]string, len(columns))
+	for i, col := range columns {
+		quotedColumns[i] = c.QuoteIdentifier(col)
+	}
+
 	// Write table comment
-	fmt.Fprintf(writer, "-- Dumping data for table `%s`\n\n", tableName)
+	fmt.Fprintf(writer, "-- Dumping data for table %s\n\n", c.QuoteIdentifier(tableName))
 
 	for rows.Next() {
 		// Create slice to hold column values
@@ -308,7 +411,7 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 		// Format values
 		var rowValues []string
 		for _, val := range valueHolders {
-			rowValues = append(rowValues, formatValue(val))
+			rowValues = append(rowValues, c.formatValueForExport(val))
 		}
 
 		values = append(values, fmt.Sprintf("(%s)", strings.Join(rowValues, ", ")))
@@ -316,9 +419,9 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 
 		// Write batch
 		if len(values) >= batchSize {
-			fmt.Fprintf(writer, "INSERT INTO `%s` (`%s`) VALUES\n%s;\n\n",
-				tableName,
-				strings.Join(columns, "`, `"),
+			fmt.Fprintf(writer, "INSERT INTO %s (%s) VALUES\n%s;\n\n",
+				c.QuoteIdentifier(tableName),
+				strings.Join(quotedColumns, ", "),
 				strings.Join(values, ",\n"))
 			values = values[:0]
 		}
@@ -326,16 +429,17 @@ func (c *Connection) exportTableDataBuffered(writer *bufio.Writer, tableName str
 
 	// Write remaining rows
 	if len(values) > 0 {
-		fmt.Fprintf(writer, "INSERT INTO `%s` (`%s`) VALUES\n%s;\n\n",
-			tableName,
-			strings.Join(columns, "`, `"),
+		fmt.Fprintf(writer, "INSERT INTO %s (%s) VALUES\n%s;\n\n",
+			c.QuoteIdentifier(tableName),
+			strings.Join(quotedColumns, ", "),
 			strings.Join(values, ",\n"))
 	}
 
 	return rowCount, rows.Err()
 }
 
-func formatValue(val interface{}) string {
+// formatValueForExport formats a value for use in an export SQL file
+func (c *Connection) formatValueForExport(val interface{}) string {
 	if val == nil {
 		return "NULL"
 	}
@@ -345,11 +449,14 @@ func formatValue(val interface{}) string {
 		s := string(v)
 		// Check if it looks like binary data
 		if containsBinaryData(v) {
+			if c.Config.Type == DatabaseTypePostgres {
+				return fmt.Sprintf("'\\x%X'", v)
+			}
 			return fmt.Sprintf("X'%X'", v)
 		}
-		return fmt.Sprintf("'%s'", escapeString(s))
+		return fmt.Sprintf("'%s'", c.EscapeString(s))
 	case string:
-		return fmt.Sprintf("'%s'", escapeString(v))
+		return fmt.Sprintf("'%s'", c.EscapeString(v))
 	case int64, int32, int, uint64, uint32, uint:
 		return fmt.Sprintf("%d", v)
 	case float64:
@@ -357,6 +464,12 @@ func formatValue(val interface{}) string {
 	case float32:
 		return fmt.Sprintf("%g", v)
 	case bool:
+		if c.Config.Type == DatabaseTypePostgres {
+			if v {
+				return "true"
+			}
+			return "false"
+		}
 		if v {
 			return "1"
 		}
@@ -364,7 +477,7 @@ func formatValue(val interface{}) string {
 	case time.Time:
 		return fmt.Sprintf("'%s'", v.Format("2006-01-02 15:04:05"))
 	default:
-		return fmt.Sprintf("'%s'", escapeString(fmt.Sprintf("%v", v)))
+		return fmt.Sprintf("'%s'", c.EscapeString(fmt.Sprintf("%v", v)))
 	}
 }
 
@@ -375,37 +488,6 @@ func containsBinaryData(data []byte) bool {
 		}
 	}
 	return false
-}
-
-func escapeString(s string) string {
-	var b strings.Builder
-	b.Grow(len(s) + 10)
-
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch c {
-		case '\\':
-			b.WriteString("\\\\")
-		case '\'':
-			b.WriteString("\\'")
-		case '"':
-			b.WriteString("\\\"")
-		case '\n':
-			b.WriteString("\\n")
-		case '\r':
-			b.WriteString("\\r")
-		case '\t':
-			b.WriteString("\\t")
-		case 0:
-			b.WriteString("\\0")
-		case 26: // Ctrl+Z
-			b.WriteString("\\Z")
-		default:
-			b.WriteByte(c)
-		}
-	}
-
-	return b.String()
 }
 
 // ExportSQLWithCallback exports database and reports progress via callback

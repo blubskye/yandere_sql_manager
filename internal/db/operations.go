@@ -99,11 +99,11 @@ type CloneOptions struct {
 func (c *Connection) CloneDatabase(opts CloneOptions) error {
 	// Check if target exists
 	if opts.DropIfExists {
-		c.DB.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`", opts.TargetDB))
+		c.DB.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s", c.QuoteIdentifier(opts.TargetDB)))
 	}
 
 	// Create target database
-	_, err := c.DB.Exec(fmt.Sprintf("CREATE DATABASE `%s`", opts.TargetDB))
+	_, err := c.DB.Exec(c.Driver.CreateDatabaseQuery(opts.TargetDB))
 	if err != nil {
 		return fmt.Errorf("failed to create target database: %w", err)
 	}
@@ -132,7 +132,7 @@ func (c *Connection) CloneDatabase(opts CloneOptions) error {
 		}
 
 		// Create table in target database
-		if _, err := c.DB.Exec(fmt.Sprintf("USE `%s`", opts.TargetDB)); err != nil {
+		if err := c.UseDatabase(opts.TargetDB); err != nil {
 			return fmt.Errorf("failed to switch to target database: %w", err)
 		}
 
@@ -143,8 +143,9 @@ func (c *Connection) CloneDatabase(opts CloneOptions) error {
 		// Copy data if requested
 		if opts.IncludeData {
 			_, err := c.DB.Exec(fmt.Sprintf(
-				"INSERT INTO `%s`.`%s` SELECT * FROM `%s`.`%s`",
-				opts.TargetDB, table.Name, opts.SourceDB, table.Name,
+				"INSERT INTO %s.%s SELECT * FROM %s.%s",
+				c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(table.Name),
+				c.QuoteIdentifier(opts.SourceDB), c.QuoteIdentifier(table.Name),
 			))
 			if err != nil {
 				return fmt.Errorf("failed to copy data for %s: %w", table.Name, err)
@@ -152,7 +153,7 @@ func (c *Connection) CloneDatabase(opts CloneOptions) error {
 		}
 
 		// Switch back to source for next iteration
-		c.DB.Exec(fmt.Sprintf("USE `%s`", opts.SourceDB))
+		c.UseDatabase(opts.SourceDB)
 	}
 
 	return nil
@@ -181,7 +182,7 @@ const (
 func (c *Connection) MergeDatabases(opts MergeOptions) error {
 	// Create target if needed
 	if opts.CreateTarget {
-		c.DB.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s`", opts.TargetDB))
+		c.DB.Exec(c.Driver.CreateDatabaseQuery(opts.TargetDB))
 	}
 
 	// Get existing tables in target
@@ -231,14 +232,15 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 
 			case MergeReplace:
 				// Drop existing and copy
-				c.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`.`%s`", opts.TargetDB, tableName))
+				c.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s.%s",
+					c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(tableName)))
 
 				createStmt, err := c.getCreateTable(tableName)
 				if err != nil {
 					return fmt.Errorf("failed to get CREATE TABLE for %s: %w", tableName, err)
 				}
 
-				if _, err := c.DB.Exec(fmt.Sprintf("USE `%s`", opts.TargetDB)); err != nil {
+				if err := c.UseDatabase(opts.TargetDB); err != nil {
 					return err
 				}
 				if _, err := c.DB.Exec(createStmt); err != nil {
@@ -246,8 +248,9 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 				}
 
 				_, err = c.DB.Exec(fmt.Sprintf(
-					"INSERT INTO `%s`.`%s` SELECT * FROM `%s`.`%s`",
-					opts.TargetDB, tableName, sourceDB, tableName,
+					"INSERT INTO %s.%s SELECT * FROM %s.%s",
+					c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(tableName),
+					c.QuoteIdentifier(sourceDB), c.QuoteIdentifier(tableName),
 				))
 				if err != nil {
 					return fmt.Errorf("failed to copy data for %s: %w", tableName, err)
@@ -258,8 +261,9 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 			case MergeAppend:
 				// Just append data (assumes compatible schema)
 				_, err := c.DB.Exec(fmt.Sprintf(
-					"INSERT INTO `%s`.`%s` SELECT * FROM `%s`.`%s`",
-					opts.TargetDB, tableName, sourceDB, tableName,
+					"INSERT INTO %s.%s SELECT * FROM %s.%s",
+					c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(tableName),
+					c.QuoteIdentifier(sourceDB), c.QuoteIdentifier(tableName),
 				))
 				if err != nil {
 					return fmt.Errorf("failed to append data for %s: %w", tableName, err)
@@ -276,10 +280,10 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 
 				// Replace table name in CREATE statement
 				createStmt = strings.Replace(createStmt,
-					fmt.Sprintf("CREATE TABLE `%s`", tableName),
-					fmt.Sprintf("CREATE TABLE `%s`", newName), 1)
+					fmt.Sprintf("CREATE TABLE %s", c.QuoteIdentifier(tableName)),
+					fmt.Sprintf("CREATE TABLE %s", c.QuoteIdentifier(newName)), 1)
 
-				if _, err := c.DB.Exec(fmt.Sprintf("USE `%s`", opts.TargetDB)); err != nil {
+				if err := c.UseDatabase(opts.TargetDB); err != nil {
 					return err
 				}
 				if _, err := c.DB.Exec(createStmt); err != nil {
@@ -287,8 +291,9 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 				}
 
 				_, err = c.DB.Exec(fmt.Sprintf(
-					"INSERT INTO `%s`.`%s` SELECT * FROM `%s`.`%s`",
-					opts.TargetDB, newName, sourceDB, tableName,
+					"INSERT INTO %s.%s SELECT * FROM %s.%s",
+					c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(newName),
+					c.QuoteIdentifier(sourceDB), c.QuoteIdentifier(tableName),
 				))
 				if err != nil {
 					return fmt.Errorf("failed to copy data for %s: %w", newName, err)
@@ -298,7 +303,7 @@ func (c *Connection) MergeDatabases(opts MergeOptions) error {
 			}
 
 			// Switch back to source
-			c.DB.Exec(fmt.Sprintf("USE `%s`", sourceDB))
+			c.UseDatabase(sourceDB)
 		}
 	}
 
@@ -340,16 +345,17 @@ func (c *Connection) CopyTable(opts CopyTableOptions) error {
 	// Modify CREATE statement if table name is different
 	if opts.TargetTable != opts.SourceTable {
 		createStmt = strings.Replace(createStmt,
-			fmt.Sprintf("CREATE TABLE `%s`", opts.SourceTable),
-			fmt.Sprintf("CREATE TABLE `%s`", opts.TargetTable), 1)
+			fmt.Sprintf("CREATE TABLE %s", c.QuoteIdentifier(opts.SourceTable)),
+			fmt.Sprintf("CREATE TABLE %s", c.QuoteIdentifier(opts.TargetTable)), 1)
 	}
 
 	// Create target table
 	if opts.DropIfExists {
-		c.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS `%s`.`%s`", opts.TargetDB, opts.TargetTable))
+		c.DB.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s.%s",
+			c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(opts.TargetTable)))
 	}
 
-	if _, err := c.DB.Exec(fmt.Sprintf("USE `%s`", opts.TargetDB)); err != nil {
+	if err := c.UseDatabase(opts.TargetDB); err != nil {
 		return fmt.Errorf("failed to switch to target database: %w", err)
 	}
 
@@ -359,7 +365,8 @@ func (c *Connection) CopyTable(opts CopyTableOptions) error {
 
 	// Copy data if requested
 	if opts.IncludeData {
-		query := fmt.Sprintf("SELECT * FROM `%s`.`%s`", opts.SourceDB, opts.SourceTable)
+		query := fmt.Sprintf("SELECT * FROM %s.%s",
+			c.QuoteIdentifier(opts.SourceDB), c.QuoteIdentifier(opts.SourceTable))
 		if opts.WhereClause != "" {
 			query += " WHERE " + opts.WhereClause
 		}
@@ -396,7 +403,7 @@ func (c *Connection) CopyTable(opts CopyTableOptions) error {
 
 				var rowValues []string
 				for _, val := range valueHolders {
-					rowValues = append(rowValues, formatValue(val))
+					rowValues = append(rowValues, c.formatValueForInsert(val))
 				}
 				batch = append(batch, fmt.Sprintf("(%s)", strings.Join(rowValues, ", ")))
 			}
@@ -406,10 +413,16 @@ func (c *Connection) CopyTable(opts CopyTableOptions) error {
 				break
 			}
 
+			// Quote column names
+			quotedColumns := make([]string, len(columns))
+			for i, col := range columns {
+				quotedColumns[i] = c.QuoteIdentifier(col)
+			}
+
 			insertQuery := fmt.Sprintf(
-				"INSERT INTO `%s`.`%s` (`%s`) VALUES %s",
-				opts.TargetDB, opts.TargetTable,
-				strings.Join(columns, "`, `"),
+				"INSERT INTO %s.%s (%s) VALUES %s",
+				c.QuoteIdentifier(opts.TargetDB), c.QuoteIdentifier(opts.TargetTable),
+				strings.Join(quotedColumns, ", "),
 				strings.Join(batch, ", "),
 			)
 
@@ -433,14 +446,48 @@ func (c *Connection) CopyTable(opts CopyTableOptions) error {
 	return nil
 }
 
+// formatValueForInsert formats a value for use in an INSERT statement
+func (c *Connection) formatValueForInsert(val interface{}) string {
+	if val == nil {
+		return "NULL"
+	}
+
+	switch v := val.(type) {
+	case []byte:
+		s := string(v)
+		// Check if it looks like binary data
+		if containsBinaryData(v) {
+			return fmt.Sprintf("X'%X'", v)
+		}
+		return fmt.Sprintf("'%s'", c.EscapeString(s))
+	case string:
+		return fmt.Sprintf("'%s'", c.EscapeString(v))
+	case int64, int32, int, uint64, uint32, uint:
+		return fmt.Sprintf("%d", v)
+	case float64:
+		return fmt.Sprintf("%g", v)
+	case float32:
+		return fmt.Sprintf("%g", v)
+	case bool:
+		if v {
+			return "1"
+		}
+		return "0"
+	case time.Time:
+		return fmt.Sprintf("'%s'", v.Format("2006-01-02 15:04:05"))
+	default:
+		return fmt.Sprintf("'%s'", c.EscapeString(fmt.Sprintf("%v", v)))
+	}
+}
+
 // SyncOptions configures database synchronization
 type SyncOptions struct {
-	SourceDB    string
-	TargetDB    string
-	Tables      []string // Empty = all tables
-	SyncMode    SyncMode
-	DryRun      bool // Just report what would change
-	OnProgress  func(table string, action string)
+	SourceDB   string
+	TargetDB   string
+	Tables     []string // Empty = all tables
+	SyncMode   SyncMode
+	DryRun     bool // Just report what would change
+	OnProgress func(table string, action string)
 }
 
 // SyncMode defines how synchronization works
@@ -505,9 +552,9 @@ func (c *Connection) CompareSchemas(db1, db2 string) (*SchemaComparison, error) 
 				result.Identical = append(result.Identical, name)
 			} else {
 				result.Different = append(result.Different, TableDiff{
-					TableName:      name,
-					FirstSchema:    create1,
-					SecondSchema:   create2,
+					TableName:    name,
+					FirstSchema:  create1,
+					SecondSchema: create2,
 				})
 			}
 		} else {
@@ -552,37 +599,67 @@ func (c *Connection) GetServerInfo() (*ServerInfo, error) {
 	info := &ServerInfo{}
 
 	// Get version
-	c.DB.QueryRow("SELECT VERSION()").Scan(&info.Version)
+	c.DB.QueryRow(c.Driver.ServerVersionQuery()).Scan(&info.Version)
 
-	// Get uptime
-	var uptime int64
-	c.DB.QueryRow("SHOW STATUS LIKE 'Uptime'").Scan(new(string), &uptime)
-	info.Uptime = time.Duration(uptime) * time.Second
+	// Get uptime - handle differently based on database type
+	if c.Config.Type == DatabaseTypePostgres {
+		var uptime int64
+		c.DB.QueryRow(c.Driver.UptimeQuery()).Scan(&uptime)
+		info.Uptime = time.Duration(uptime) * time.Second
+	} else {
+		var varName string
+		var uptime int64
+		c.DB.QueryRow(c.Driver.UptimeQuery()).Scan(&varName, &uptime)
+		info.Uptime = time.Duration(uptime) * time.Second
+	}
 
 	// Get connection count
-	c.DB.QueryRow("SHOW STATUS LIKE 'Threads_connected'").Scan(new(string), &info.Connections)
+	if c.Config.Type == DatabaseTypePostgres {
+		c.DB.QueryRow(c.Driver.ConnectionCountQuery()).Scan(&info.Connections)
+	} else {
+		var varName string
+		c.DB.QueryRow(c.Driver.ConnectionCountQuery()).Scan(&varName, &info.Connections)
+	}
 
-	// Get database size
-	rows, err := c.DB.Query(`
-		SELECT table_schema, SUM(data_length + index_length)
-		FROM information_schema.tables
-		GROUP BY table_schema
-	`)
-	if err == nil {
-		defer rows.Close()
-		info.DatabaseSizes = make(map[string]int64)
-		for rows.Next() {
-			var name string
-			var size int64
-			rows.Scan(&name, &size)
-			info.DatabaseSizes[name] = size
+	// Get database size - different queries for different DBs
+	info.DatabaseSizes = make(map[string]int64)
+
+	if c.Config.Type == DatabaseTypePostgres {
+		rows, err := c.DB.Query(`
+			SELECT datname, pg_database_size(datname)
+			FROM pg_database
+			WHERE datistemplate = false
+		`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				var size int64
+				rows.Scan(&name, &size)
+				info.DatabaseSizes[name] = size
+			}
+		}
+	} else {
+		rows, err := c.DB.Query(`
+			SELECT table_schema, SUM(data_length + index_length)
+			FROM information_schema.tables
+			GROUP BY table_schema
+		`)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				var size int64
+				rows.Scan(&name, &size)
+				info.DatabaseSizes[name] = size
+			}
 		}
 	}
 
 	return info, nil
 }
 
-// ServerInfo contains MariaDB server information
+// ServerInfo contains database server information
 type ServerInfo struct {
 	Version       string
 	Uptime        time.Duration

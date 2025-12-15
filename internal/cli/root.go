@@ -21,9 +21,11 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/blubskye/yandere_sql_manager/internal/config"
 	"github.com/blubskye/yandere_sql_manager/internal/db"
+	"github.com/blubskye/yandere_sql_manager/internal/logging"
 	"github.com/blubskye/yandere_sql_manager/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -31,6 +33,7 @@ import (
 
 var (
 	// Global flags
+	dbType   string
 	host     string
 	port     int
 	user     string
@@ -39,7 +42,15 @@ var (
 	profile  string
 	database string
 
+	// Debug flags
+	verbose    bool
+	debug      bool
+	trace      bool
+	logFile    string
+	stackTrace bool
+
 	// Flag changed tracking
+	typeChanged bool
 	hostChanged bool
 	portChanged bool
 
@@ -49,12 +60,17 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "ysm",
-	Short: "Yandere SQL Manager - MariaDB management made easy",
+	Short: "Yandere SQL Manager - Database management made easy",
 	Long: `YSM (Yandere SQL Manager) - "I'll never let your databases go~"
 
-A TUI and CLI tool for managing MariaDB databases.
+A TUI and CLI tool for managing MariaDB and PostgreSQL databases.
 Run without arguments to start the interactive TUI.`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Initialize logging based on flags
+		initLogging()
+	},
 	PreRun: func(cmd *cobra.Command, args []string) {
+		typeChanged = cmd.Flag("type").Changed
 		hostChanged = cmd.Flag("host").Changed
 		portChanged = cmd.Flag("port").Changed
 	},
@@ -67,13 +83,21 @@ func init() {
 	cobra.OnInitialize(initConfig)
 
 	// Global connection flags
+	rootCmd.PersistentFlags().StringVarP(&dbType, "type", "t", "mariadb", "Database type (mariadb, postgres)")
 	rootCmd.PersistentFlags().StringVarP(&host, "host", "H", "localhost", "Database host")
-	rootCmd.PersistentFlags().IntVarP(&port, "port", "P", 3306, "Database port")
+	rootCmd.PersistentFlags().IntVarP(&port, "port", "P", 0, "Database port (default: 3306 for MariaDB, 5432 for PostgreSQL)")
 	rootCmd.PersistentFlags().StringVarP(&user, "user", "u", "", "Database user")
 	rootCmd.PersistentFlags().StringVarP(&password, "password", "p", "", "Database password")
 	rootCmd.PersistentFlags().StringVarP(&socket, "socket", "S", "", "Unix socket path")
 	rootCmd.PersistentFlags().StringVar(&profile, "profile", "", "Connection profile to use")
 	rootCmd.PersistentFlags().StringVarP(&database, "database", "d", "", "Database to use")
+
+	// Debug and logging flags
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output (info level)")
+	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output (shows caller info)")
+	rootCmd.PersistentFlags().BoolVar(&trace, "trace", false, "Enable trace output (most verbose)")
+	rootCmd.PersistentFlags().StringVar(&logFile, "log-file", "", "Write logs to file (in addition to stderr)")
+	rootCmd.PersistentFlags().BoolVar(&stackTrace, "stack-trace", false, "Show stack traces on errors")
 
 	// Add subcommands
 	rootCmd.AddCommand(connectCmd)
@@ -83,6 +107,11 @@ func init() {
 	rootCmd.AddCommand(queryCmd)
 	rootCmd.AddCommand(profileCmd)
 	rootCmd.AddCommand(setCmd)
+	rootCmd.AddCommand(userCmd)
+	rootCmd.AddCommand(backupCmd)
+	rootCmd.AddCommand(dbCmd)
+	rootCmd.AddCommand(statsCmd)
+	rootCmd.AddCommand(clusterCmd)
 	rootCmd.AddCommand(versionCmd)
 }
 
@@ -93,6 +122,41 @@ func initConfig() {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load config: %v\n", err)
 		cfg = &config.Config{
 			Profiles: make(map[string]config.Profile),
+		}
+	}
+}
+
+func initLogging() {
+	// Set log level based on flags (most verbose wins)
+	if trace {
+		logging.EnableTrace()
+		logging.Debug("Trace logging enabled")
+	} else if debug {
+		logging.EnableDebug()
+		logging.Debug("Debug logging enabled")
+	} else if verbose {
+		logging.SetLevel(logging.LevelInfo)
+		logging.Info("Verbose logging enabled")
+	}
+
+	// Enable stack traces on errors if requested
+	if stackTrace {
+		logging.EnableStackOnError()
+		logging.Debug("Stack traces on errors enabled")
+	}
+
+	// Set up log file if specified
+	if logFile != "" {
+		// Expand path
+		if logFile[0] == '~' {
+			home, _ := os.UserHomeDir()
+			logFile = filepath.Join(home, logFile[1:])
+		}
+
+		if err := logging.SetLogFile(logFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open log file: %v\n", err)
+		} else {
+			logging.Debug("Logging to file: %s", logFile)
 		}
 	}
 }
@@ -113,6 +177,9 @@ func getConnectionConfig() (db.ConnectionConfig, error) {
 		connCfg := p.ToConnectionConfig()
 
 		// Override with any explicitly set flags
+		if typeChanged {
+			connCfg.Type = db.DatabaseType(dbType)
+		}
 		if hostChanged {
 			connCfg.Host = host
 		}
@@ -148,9 +215,17 @@ func getConnectionConfig() (db.ConnectionConfig, error) {
 		return db.ConnectionConfig{}, fmt.Errorf("no user specified. Use -u/--user or set up a profile")
 	}
 
+	// Determine database type and default port
+	connType := db.DatabaseType(dbType)
+	connPort := port
+	if connPort == 0 {
+		connPort = db.DefaultPort(connType)
+	}
+
 	return db.ConnectionConfig{
+		Type:     connType,
 		Host:     host,
-		Port:     port,
+		Port:     connPort,
 		User:     user,
 		Password: password,
 		Socket:   socket,
@@ -230,8 +305,8 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("YSM (Yandere SQL Manager) v0.1.1")
-		fmt.Println("\"I'll never let your databases go~\"")
+		fmt.Println("YSM (Yandere SQL Manager) v0.2.0")
+		fmt.Println("\"I'll never let your databases go~\" <3")
 		fmt.Println()
 		fmt.Println("Copyright (C) 2025 blubskye")
 		fmt.Println("License: GNU AGPL v3.0 <https://www.gnu.org/licenses/agpl-3.0.html>")

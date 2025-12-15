@@ -58,4 +58,12 @@ var (
 	bannerStyle = lipgloss.NewStyle().
 			Foreground(primaryColor).
 			Bold(true)
+
+	selectedStyle = lipgloss.NewStyle().
+			Foreground(primaryColor).
+			Bold(true)
+
+	headerStyle = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Bold(true)
 )

@@ -35,6 +35,7 @@ type Config struct {
 
 // Profile holds connection settings for a database
 type Profile struct {
+	Type      string            `yaml:"type,omitempty"` // "mariadb" or "postgres" (default: mariadb)
 	Host      string            `yaml:"host"`
 	Port      int               `yaml:"port"`
 	User      string            `yaml:"user"`
@@ -46,11 +47,16 @@ type Profile struct {
 
 // ToConnectionConfig converts a Profile to db.ConnectionConfig
 func (p *Profile) ToConnectionConfig() db.ConnectionConfig {
+	dbType := db.DatabaseType(p.Type)
+	if dbType == "" {
+		dbType = db.DatabaseTypeMariaDB // Default to MariaDB for backward compatibility
+	}
 	port := p.Port
 	if port == 0 {
-		port = db.DefaultPort()
+		port = db.DefaultPort(dbType)
 	}
 	return db.ConnectionConfig{
+		Type:     dbType,
 		Host:     p.Host,
 		Port:     port,
 		User:     p.User,

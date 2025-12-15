@@ -39,6 +39,11 @@ const (
 	ViewImport
 	ViewExport
 	ViewSettings
+	ViewUsers
+	ViewBackup
+	ViewSetupWizard
+	ViewDashboard
+	ViewCluster
 )
 
 // Model is the main application model
@@ -163,6 +168,21 @@ func (m *Model) switchViewString(viewName, database, table string) (tea.Model, t
 	case "settings":
 		m.currentView = ViewSettings
 		m.views[ViewSettings] = views.NewSettingsView(m.conn, m.width, m.height)
+	case "users":
+		m.currentView = ViewUsers
+		m.views[ViewUsers] = views.NewUsersView(m.conn, m.width, m.height)
+	case "backup":
+		m.currentView = ViewBackup
+		m.views[ViewBackup] = views.NewBackupView(m.conn, m.width, m.height)
+	case "setup":
+		m.currentView = ViewSetupWizard
+		m.views[ViewSetupWizard] = views.NewSetupWizardView(m.conn, m.width, m.height)
+	case "dashboard":
+		m.currentView = ViewDashboard
+		m.views[ViewDashboard] = views.NewDashboardView(m.conn, m.width, m.height)
+	case "cluster":
+		m.currentView = ViewCluster
+		m.views[ViewCluster] = views.NewClusterView(m.conn, m.width, m.height)
 	}
 
 	if view, ok := m.views[m.currentView]; ok {

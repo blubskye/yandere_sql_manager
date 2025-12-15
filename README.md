@@ -1,33 +1,94 @@
 # YSM - Yandere SQL Manager
 
-A TUI and CLI tool for managing MariaDB databases. *"I'll never let your databases go~"*
-
-![YSM Screenshot](ysm_screenshot.png)
+A TUI and CLI tool for managing MariaDB and PostgreSQL databases. *"I'll never let your databases go~"*
 
 ## Features
 
+### Core Features
 - **Interactive TUI** - Browse databases, tables, and data with a beautiful terminal interface
+- **Multi-Database Support** - Full support for MariaDB/MySQL and PostgreSQL
 - **Import/Export** - Full support for `.sql`, `.sql.gz`, `.sql.xz`, and `.sql.zst` files
-- **System Variables** - View, edit, and manage MariaDB session/global variables
 - **Connection Profiles** - Save and manage multiple database connections with auto-applied settings
 - **Query Editor** - Execute SQL queries directly from the TUI
 - **Database Operations** - Clone, merge, copy, and diff databases
-- **Buffered I/O** - Efficient handling of large database files
+
+### User Management
+- Create, drop, and manage database users
+- Grant and revoke privileges
+- View user permissions
+- Support for host-based access (MariaDB) and roles (PostgreSQL)
+
+### Backup & Restore
+- Create full database backups with compression
+- Restore from backup with progress tracking
+- Per-database backup scheduling
+- Backup retention policies
+- List and manage backup history
+
+### Database Setup Wizard
+- Quick setup for common applications (WordPress, Laravel, Drupal, Nextcloud)
+- Create database + user in one step
+- Configurable charset and collation
+- Template-based configuration
+
+### Statistics Dashboard
+- Real-time server statistics
+- Database and table sizes
+- Connection monitoring
+- Performance metrics (cache hit rate, slow queries)
+- Auto-refresh support
+
+### Cluster Management
+- MariaDB Galera Cluster support
+- MariaDB Master/Slave replication monitoring
+- PostgreSQL Streaming Replication support
+- Cluster health checks
+- Node status and lag monitoring
+
+### System Variables
+- View, edit, and manage session/global variables
+- Profile-based variable presets
+- Common variable quick-access
+
+### Performance
+- **Buffered I/O** - Efficient handling of large database files (auto-scaling buffers up to 32MB)
+- **Batch Processing** - Optimized transaction batching for imports
+- **Progress Tracking** - Real-time progress for long operations
+
+### Debugging
+- Verbose, debug, and trace logging levels
+- Stack traces on errors
+- File logging support
 
 ## Installation
+
+### From Binary
+
+Download the latest release from the [Releases](https://github.com/blubskye/yandere_sql_manager/releases) page.
+
+```bash
+# Linux (amd64)
+tar -xzf ysm-linux-amd64.tar.gz
+sudo ./install.sh
+
+# Or manual install
+sudo cp ysm /usr/local/bin/
+sudo cp ysm.1 /usr/local/share/man/man1/
+```
 
 ### From Source
 
 ```bash
 git clone https://github.com/blubskye/yandere_sql_manager.git
 cd yandere_sql_manager
-go build -o ysm ./cmd/ysm
+make build
+sudo make install
 ```
 
 ### Dependencies
 
-- Go 1.21+
-- MariaDB/MySQL server
+- Go 1.21+ (for building from source)
+- MariaDB/MySQL or PostgreSQL server
 - Optional: `xz`, `zstd` for compression support
 
 ## Usage
@@ -36,13 +97,16 @@ go build -o ysm ./cmd/ysm
 
 ```bash
 # Launch interactive TUI
-ysm tui
+ysm
 
 # Connect with specific credentials
-ysm tui -H localhost -P 3306 -u root -p mypassword
+ysm -H localhost -P 3306 -u root -p mypassword
 
 # Use a saved profile
-ysm tui --profile local
+ysm --profile local
+
+# Connect to PostgreSQL
+ysm -t postgres -H localhost -P 5432 -u postgres
 ```
 
 **TUI Key Bindings:**
@@ -50,10 +114,15 @@ ysm tui --profile local
 |-----|--------|
 | `Enter` | Select database/table |
 | `/` | Filter list |
+| `n` | New database (setup wizard) |
+| `d` | Statistics dashboard |
+| `c` | Cluster status |
+| `u` | User management |
+| `b` | Backup management |
 | `i` | Import SQL file |
 | `e` | Export database |
 | `s` | Open SQL query editor |
-| `v` | Open system variables panel |
+| `v` | System variables |
 | `r` | Refresh |
 | `Esc` | Go back |
 | `q` | Quit |
@@ -77,12 +146,6 @@ ysm import backup.sql -d olddb --rename newdb
 
 # Disable foreign key checks during import
 ysm import backup.sql -d mydb --no-fk-checks
-
-# Disable unique checks during import
-ysm import backup.sql -d mydb --no-unique-checks
-
-# Continue on errors
-ysm import backup.sql -d mydb --continue
 ```
 
 #### Export
@@ -91,22 +154,121 @@ ysm import backup.sql -d mydb --continue
 # Basic export
 ysm export mydb
 
-# Export to specific file
-ysm export mydb -o backup.sql
-
 # Export with compression
 ysm export mydb -o backup.sql.zst
-ysm export mydb -o backup.sql.xz
-ysm export mydb -o backup.sql.gz
 
 # Export structure only (no data)
 ysm export mydb --no-data
 
 # Export specific tables
 ysm export mydb --tables users,posts
+```
 
-# Include session variables in export
-ysm export mydb --include-vars
+#### Backup & Restore
+
+```bash
+# Create backup of all databases
+ysm backup create
+
+# Backup specific databases with compression
+ysm backup create mydb1 mydb2 --compress zstd
+
+# List all backups
+ysm backup list
+
+# Show backup details
+ysm backup show 20250101-120000
+
+# Restore a backup
+ysm backup restore 20250101-120000
+
+# Restore specific databases
+ysm backup restore 20250101-120000 --databases mydb1
+
+# Delete a backup
+ysm backup delete 20250101-120000
+```
+
+#### User Management
+
+```bash
+# List all users
+ysm user list
+
+# Create a new user
+ysm user create myuser -p mypassword
+
+# Create user with specific host (MariaDB)
+ysm user create myuser -p mypassword -H 192.168.1.%
+
+# Show user privileges
+ysm user show myuser
+
+# Grant privileges
+ysm user grant myuser -d mydb --privileges SELECT,INSERT,UPDATE
+
+# Revoke privileges
+ysm user revoke myuser -d mydb --privileges ALL
+
+# Drop user
+ysm user drop myuser
+```
+
+#### Database Management
+
+```bash
+# Create database
+ysm db create mydb
+
+# Create with charset/collation
+ysm db create mydb --charset utf8mb4 --collation utf8mb4_unicode_ci
+
+# Setup database for an app (creates db + user)
+ysm db setup --template wordpress --name wp_site --user wp_user
+
+# List available templates
+ysm db templates
+
+# Drop database
+ysm db drop mydb
+```
+
+#### Statistics
+
+```bash
+# Show server summary
+ysm stats summary
+
+# Show database sizes
+ysm stats databases
+
+# Show table sizes
+ysm stats tables mydb
+
+# Show connection info
+ysm stats connections
+
+# Show performance metrics
+ysm stats performance
+```
+
+#### Cluster Management
+
+```bash
+# Show cluster status
+ysm cluster status
+
+# List cluster nodes
+ysm cluster nodes
+
+# Quick health check
+ysm cluster health
+
+# Galera-specific status (MariaDB)
+ysm cluster galera
+
+# Replication details
+ysm cluster replication
 ```
 
 #### System Variables
@@ -115,16 +277,13 @@ ysm export mydb --include-vars
 # Set a session variable
 ysm set foreign_key_checks 0
 
-# Set a global variable (requires SUPER privilege)
+# Set a global variable
 ysm set --global max_connections 200
 
 # Show variables matching a pattern
 ysm set --show "character%"
 
-# Show a specific variable
-ysm set --show foreign_key_checks
-
-# List common variables with current values
+# List common variables
 ysm set --list
 ```
 
@@ -134,60 +293,34 @@ ysm set --list
 # Add a new profile
 ysm profile add local -H localhost -P 3306 -u root -p mypassword
 
-# List all profiles
-ysm profile list
-
-# Show profile details
-ysm profile show local
+# Add PostgreSQL profile
+ysm profile add pglocal -t postgres -H localhost -P 5432 -u postgres
 
 # Set default profile
 ysm profile use local
 
-# Remove a profile
-ysm profile remove local
+# Set profile variables
+ysm profile set-var local foreign_key_checks 0
 ```
 
-#### Profile Variables
-
-Profiles can store variables that are automatically applied when connecting:
+### Debug Flags
 
 ```bash
-# Set a variable for a profile
-ysm profile set-var local foreign_key_checks 0
-ysm profile set-var local sql_mode STRICT_TRANS_TABLES
+# Verbose output (info level)
+ysm -v import backup.sql -d mydb
 
-# List variables for a profile
-ysm profile vars local
+# Debug output (shows file:line)
+ysm --debug import backup.sql -d mydb
 
-# Remove a variable from a profile
-ysm profile unset-var local foreign_key_checks
+# Trace output (most verbose)
+ysm --trace import backup.sql -d mydb
+
+# Show stack traces on errors
+ysm --stack-trace import backup.sql -d mydb
+
+# Log to file
+ysm --log-file /var/log/ysm.log import backup.sql -d mydb
 ```
-
-Example profile with variables in `~/.config/ysm/config.yaml`:
-```yaml
-profiles:
-  local:
-    host: localhost
-    port: 3306
-    user: root
-    password: mypassword
-    variables:
-      foreign_key_checks: "0"
-      sql_mode: "STRICT_TRANS_TABLES"
-```
-
-### Common MariaDB Variables
-
-| Variable | Description | Common Values |
-|----------|-------------|---------------|
-| `foreign_key_checks` | Enable/disable FK constraints | 0, 1 |
-| `unique_checks` | Enable/disable unique checks | 0, 1 |
-| `sql_mode` | SQL behavior modes | STRICT_TRANS_TABLES |
-| `autocommit` | Auto-commit transactions | 0, 1 |
-| `wait_timeout` | Connection timeout (seconds) | 28800 |
-| `max_allowed_packet` | Max packet size | 16777216 |
-| `character_set_client` | Client character set | utf8mb4 |
-| `time_zone` | Session timezone | +00:00, SYSTEM |
 
 ## Compression Support
 
@@ -195,9 +328,9 @@ YSM supports multiple compression formats for import/export:
 
 | Format | Extension | Notes |
 |--------|-----------|-------|
-| gzip | `.gz` | Built-in Go support |
-| xz | `.xz` | Requires `xz` command |
-| zstd | `.zst` | Requires `zstd` command |
+| gzip | `.gz` | Built-in support |
+| xz | `.xz` | Built-in support |
+| zstd | `.zst` | Built-in support |
 
 Compression is auto-detected from file extension.
 
@@ -209,6 +342,7 @@ Configuration is stored in `~/.config/ysm/config.yaml`:
 default_profile: local
 profiles:
   local:
+    type: mariadb
     host: localhost
     port: 3306
     user: root
@@ -216,11 +350,41 @@ profiles:
     database: mydb
     variables:
       foreign_key_checks: "0"
-  production:
-    host: db.example.com
-    port: 3306
-    user: app
+  postgres:
+    type: postgres
+    host: localhost
+    port: 5432
+    user: postgres
     password: secret
+```
+
+### Backup Storage
+
+Backups are stored in `~/.local/share/ysm/backups/` (or `$XDG_DATA_HOME/ysm/backups/`).
+
+### Backup Schedules
+
+Schedules are stored in `~/.config/ysm/schedules.json`:
+
+```json
+{
+  "schedules": {
+    "mydb": {
+      "enabled": true,
+      "interval": "daily",
+      "compression": "zstd",
+      "retain_count": 7
+    }
+  }
+}
+```
+
+## Man Page
+
+After installation, view the man page:
+
+```bash
+man ysm
 ```
 
 ## License

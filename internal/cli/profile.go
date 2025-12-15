@@ -47,16 +47,20 @@ var profileListCmd = &cobra.Command{
 		}
 
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tHOST\tPORT\tUSER\tDATABASE\tDEFAULT")
-		fmt.Fprintln(w, "----\t----\t----\t----\t--------\t-------")
+		fmt.Fprintln(w, "NAME\tTYPE\tHOST\tPORT\tUSER\tDATABASE\tDEFAULT")
+		fmt.Fprintln(w, "----\t----\t----\t----\t----\t--------\t-------")
 
 		for name, p := range cfg.Profiles {
 			isDefault := ""
 			if name == cfg.DefaultProfile {
 				isDefault = "*"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\t%s\n",
-				name, p.Host, p.Port, p.User, p.Database, isDefault)
+			dbType := p.Type
+			if dbType == "" {
+				dbType = "mariadb"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				name, dbType, p.Host, p.Port, p.User, p.Database, isDefault)
 		}
 		w.Flush()
 
@@ -71,7 +75,8 @@ var profileAddCmd = &cobra.Command{
 
 Examples:
   ysm profile add local -H localhost -u root
-  ysm profile add production -H db.example.com -u admin -P 3307`,
+  ysm profile add production -H db.example.com -u admin -P 3307
+  ysm profile add pglocal -t postgres -H localhost -u postgres`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -83,6 +88,7 @@ Examples:
 		}
 
 		p := config.Profile{
+			Type:     dbType,
 			Host:     host,
 			Port:     port,
 			User:     user,
@@ -169,7 +175,12 @@ var profileShowCmd = &cobra.Command{
 			return err
 		}
 
+		profileType := p.Type
+		if profileType == "" {
+			profileType = "mariadb"
+		}
 		fmt.Printf("Profile: %s\n", name)
+		fmt.Printf("  Type:     %s\n", profileType)
 		fmt.Printf("  Host:     %s\n", p.Host)
 		fmt.Printf("  Port:     %d\n", p.Port)
 		fmt.Printf("  User:     %s\n", p.User)

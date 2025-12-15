@@ -23,35 +23,29 @@ import (
 	"strings"
 )
 
-// Variable represents a MariaDB system variable
+// Variable represents a database system variable
 type Variable struct {
 	Name  string
 	Value string
 	Scope string // GLOBAL, SESSION, or BOTH
 }
 
-// CommonVariables lists frequently used system variables
-var CommonVariables = []string{
-	"foreign_key_checks",
-	"unique_checks",
-	"autocommit",
-	"sql_mode",
-	"wait_timeout",
-	"max_allowed_packet",
-	"character_set_client",
-	"character_set_results",
-	"character_set_connection",
-	"collation_connection",
-	"time_zone",
-	"tx_isolation",
-	"sql_safe_updates",
-	"sql_select_limit",
-}
-
 // GetVariable retrieves a single system variable value
 func (c *Connection) GetVariable(name string) (string, error) {
+	query := c.Driver.GetVariableQuery(name)
+
+	if c.Config.Type == DatabaseTypePostgres {
+		// PostgreSQL returns just the value
+		var value string
+		err := c.DB.QueryRow(query).Scan(&value)
+		if err != nil {
+			return "", fmt.Errorf("failed to get variable '%s': %w", name, err)
+		}
+		return value, nil
+	}
+
+	// MariaDB returns name and value
 	var varName, value string
-	query := fmt.Sprintf("SHOW VARIABLES LIKE '%s'", name)
 	err := c.DB.QueryRow(query).Scan(&varName, &value)
 	if err != nil {
 		return "", fmt.Errorf("failed to get variable '%s': %w", name, err)
@@ -65,7 +59,7 @@ func (c *Connection) GetVariables(pattern string) ([]Variable, error) {
 		pattern = "%"
 	}
 
-	query := fmt.Sprintf("SHOW VARIABLES LIKE '%s'", pattern)
+	query := c.Driver.GetVariablesLikeQuery(pattern)
 	rows, err := c.DB.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get variables: %w", err)
@@ -91,7 +85,7 @@ func (c *Connection) GetGlobalVariables(pattern string) ([]Variable, error) {
 		pattern = "%"
 	}
 
-	query := fmt.Sprintf("SHOW GLOBAL VARIABLES LIKE '%s'", pattern)
+	query := c.Driver.GetGlobalVariablesLikeQuery(pattern)
 	rows, err := c.DB.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get global variables: %w", err)
@@ -114,7 +108,7 @@ func (c *Connection) GetGlobalVariables(pattern string) ([]Variable, error) {
 // GetCommonVariables retrieves the common variables with their current values
 func (c *Connection) GetCommonVariables() ([]Variable, error) {
 	var variables []Variable
-	for _, name := range CommonVariables {
+	for _, name := range c.Driver.CommonVariables() {
 		value, err := c.GetVariable(name)
 		if err != nil {
 			// Variable might not exist, skip it
@@ -138,14 +132,9 @@ func (c *Connection) SetVariable(name, value string, global bool) error {
 		}
 	}
 
-	var query string
-	if global {
-		query = fmt.Sprintf("SET GLOBAL %s = ?", name)
-	} else {
-		query = fmt.Sprintf("SET SESSION %s = ?", name)
-	}
+	query := c.Driver.SetVariableQuery(name, value, global)
 
-	_, err := c.DB.Exec(query, value)
+	_, err := c.DB.Exec(query)
 	if err != nil {
 		scope := "session"
 		if global {
@@ -178,10 +167,18 @@ func (c *Connection) GetVariableInfo(name string) (*Variable, error) {
 	// Get session value
 	sessionVal, sessionErr := c.GetVariable(name)
 
-	// Get global value
+	// Get global value (for MariaDB; PostgreSQL doesn't distinguish the same way)
 	var globalVal string
-	query := fmt.Sprintf("SHOW GLOBAL VARIABLES LIKE '%s'", name)
-	globalErr := c.DB.QueryRow(query).Scan(new(string), &globalVal)
+	var globalErr error
+
+	if c.Config.Type == DatabaseTypePostgres {
+		// PostgreSQL - same query for both
+		globalVal, globalErr = c.GetVariable(name)
+	} else {
+		// MariaDB
+		query := c.Driver.GetGlobalVariablesLikeQuery(name)
+		globalErr = c.DB.QueryRow(query).Scan(new(string), &globalVal)
+	}
 
 	if sessionErr != nil && globalErr != nil {
 		return nil, fmt.Errorf("variable '%s' not found", name)

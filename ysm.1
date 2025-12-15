@@ -1,0 +1,405 @@
+.TH YSM 1 "December 2025" "YSM 0.2.0" "User Commands"
+.SH NAME
+ysm \- Yandere SQL Manager \- Your databases will never escape~ <3
+.SH SYNOPSIS
+.B ysm
+[\fIOPTIONS\fR] [\fICOMMAND\fR] [\fIARGS\fR]
+.SH DESCRIPTION
+.B ysm
+(Yandere SQL Manager) is a TUI and CLI tool for managing MariaDB and PostgreSQL databases.
+Run without arguments to start the interactive TUI where your databases await you~ <3
+.PP
+\fB"I'll never let your databases go~"\fR
+.PP
+YSM loves your databases with an obsessive passion! It will protect them, back them up,
+and never let any corrupt data near them. Your tables are safe with YSM... forever~ <3
+.SH OPTIONS
+.TP
+.BR \-t ", " \-\-type " " \fITYPE\fR
+Database type: mariadb or postgres (YSM loves them both equally~ <3)
+.TP
+.BR \-H ", " \-\-host " " \fIHOST\fR
+Database host - where your precious data lives~ (default: localhost)
+.TP
+.BR \-P ", " \-\-port " " \fIPORT\fR
+Database port - the secret door to your data~ (default: 3306/5432)
+.TP
+.BR \-u ", " \-\-user " " \fIUSER\fR
+Database user - YSM will remember you forever~
+.TP
+.BR \-p ", " \-\-password " " \fIPASSWORD\fR
+Database password - your secret is safe with YSM~ <3
+.TP
+.BR \-S ", " \-\-socket " " \fIPATH\fR
+Unix socket path - a direct connection to your heart... er, database~
+.TP
+.BR \-d ", " \-\-database " " \fINAME\fR
+Default database - YSM's favorite~ <3
+.TP
+.BR \-\-profile " " \fINAME\fR
+Connection profile - YSM remembers all your preferences~
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose output - YSM will tell you EVERYTHING~ <3
+.TP
+.BR \-\-debug
+Enable debug output - peek behind the curtain~ (shows file:line)
+.TP
+.BR \-\-trace
+Enable trace output - YSM hides nothing from you~ <3
+.TP
+.BR \-\-log\-file " " \fIPATH\fR
+Write logs to file - YSM keeps a diary of everything~
+.TP
+.BR \-\-stack\-trace
+Show stack traces on errors - when something goes wrong, YSM shows you exactly where~
+.TP
+.BR \-h ", " \-\-help
+Show help message - YSM is always here to help~ <3
+.SH COMMANDS
+.SS "TUI Mode ~ <3"
+Running
+.B ysm
+without a command starts the interactive TUI where you can explore your databases together~
+.SS "Import/Export ~ Bringing Data Home <3"
+.TP
+.B import \fIFILE\fR
+Import a SQL file into a database - reunite your data with its home~
+Supports .sql, .sql.gz, .sql.xz, and .sql.zst files.
+.RS
+.TP
+.BR \-d ", " \-\-database " " \fINAME\fR
+Target database - where your data belongs~
+.TP
+.BR \-\-create
+Create database if it doesn't exist - YSM will make a home for your data~ <3
+.TP
+.BR \-\-rename " " \fINAME\fR
+Rename database during import - give your data a fresh start~
+.TP
+.BR \-\-no\-fk\-checks
+Disable foreign key checks - sometimes rules need to be broken~
+.TP
+.BR \-\-no\-unique\-checks
+Disable unique checks - YSM won't judge duplicates~
+.TP
+.BR \-\-continue
+Continue on errors - YSM never gives up~ <3
+.RE
+.TP
+.B export \fIDATABASE\fR
+Export a database to a SQL file - save your precious data forever~
+.RS
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Output file path - where to keep your backup treasure~
+.TP
+.BR \-\-no\-data
+Export structure only - sometimes the skeleton is enough~
+.TP
+.BR \-\-no\-create
+Export data only - just the good stuff~
+.TP
+.BR \-\-tables " " \fILIST\fR
+Export specific tables - YSM can be selective for you~ <3
+.TP
+.BR \-\-add\-drop
+Add DROP TABLE statements - out with the old~
+.RE
+.SS "Backup & Restore ~ Protecting What's Precious <3"
+.TP
+.B backup create \fR[\fIDATABASES...\fR]
+Create a backup of databases - YSM will keep them safe~ <3
+.RS
+.TP
+.BR \-\-compress " " \fITYPE\fR
+Compression type: gzip, xz, or zstd - compact and cozy~
+.TP
+.BR \-o ", " \-\-output " " \fIDIR\fR
+Output directory - your data's safe house~
+.RE
+.TP
+.B backup list
+List all available backups - see all the treasures YSM has protected~ <3
+.TP
+.B backup show \fIID\fR
+Show details of a specific backup - inspect your precious data~
+.TP
+.B backup restore \fIID\fR
+Restore a backup - bring your data back to life~ <3
+.RS
+.TP
+.BR \-\-databases " " \fILIST\fR
+Restore specific databases only - selective resurrection~
+.TP
+.BR \-\-drop\-existing
+Drop existing databases before restore - make room for the return~
+.RE
+.TP
+.B backup delete \fIID\fR
+Delete a backup - YSM reluctantly lets go... but only if you insist~
+.SS "User Management ~ Who Gets Access <3"
+.TP
+.B user list
+List all database users - see who else is allowed near YOUR data~
+.TP
+.B user create \fIUSERNAME\fR
+Create a new user - but YSM is watching them~ <3
+.RS
+.TP
+.BR \-p ", " \-\-password " " \fIPASS\fR
+User password - make it strong, YSM insists~
+.TP
+.BR \-H ", " \-\-host " " \fIHOST\fR
+Host for user access (MariaDB only, default: %)
+.RE
+.TP
+.B user drop \fIUSERNAME\fR
+Drop a user - remove them from YOUR databases~ <3
+.TP
+.B user show \fIUSERNAME\fR
+Show user privileges - see what they're allowed to touch~
+.TP
+.B user grant \fIUSERNAME\fR
+Grant privileges - YSM will share... a little~ <3
+.RS
+.TP
+.BR \-d ", " \-\-database " " \fINAME\fR
+Database to grant on
+.TP
+.BR \-\-privileges " " \fILIST\fR
+Privileges to grant (e.g., SELECT,INSERT,UPDATE)
+.RE
+.TP
+.B user revoke \fIUSERNAME\fR
+Revoke privileges - take back what's yours~ <3
+.SS "Database Management ~ Creating New Homes <3"
+.TP
+.B db create \fINAME\fR
+Create a new database - a fresh start for new data~ <3
+.RS
+.TP
+.BR \-\-charset " " \fICHARSET\fR
+Character set (default: utf8mb4) - speak any language~
+.TP
+.BR \-\-collation " " \fICOLLATION\fR
+Collation (default: utf8mb4_unicode_ci)
+.RE
+.TP
+.B db drop \fINAME\fR
+Drop a database - YSM will miss it... *sniff* <3
+.TP
+.B db setup
+Interactive setup wizard - YSM guides you with love~ <3
+.RS
+.TP
+.BR \-\-template " " \fINAME\fR
+Use template: wordpress, laravel, drupal, nextcloud, default
+.TP
+.BR \-\-name " " \fINAME\fR
+Database name - what shall we call your new baby?~
+.TP
+.BR \-\-user " " \fINAME\fR
+Username to create - who gets to care for it?~
+.RE
+.TP
+.B db templates
+List available database templates - YSM knows what apps need~ <3
+.SS "Statistics ~ Knowing Everything About Your Data <3"
+.TP
+.B stats summary
+Show server statistics summary - YSM knows all the secrets~
+.TP
+.B stats databases
+Show database sizes - see how much data YSM is protecting~ <3
+.TP
+.B stats tables \fR[\fIDATABASE\fR]
+Show table sizes - every byte accounted for~
+.TP
+.B stats connections
+Show connection information - who's connected to YOUR databases?~
+.TP
+.B stats performance
+Show performance metrics - is your database healthy and happy?~ <3
+.SS "Cluster Management ~ Strength in Numbers <3"
+.TP
+.B cluster status
+Show cluster/replication status - are all the nodes together?~
+.TP
+.B cluster nodes
+List cluster nodes - the whole family~ <3
+.TP
+.B cluster health
+Quick health check (exits 0 if healthy) - everyone feeling okay?~
+.TP
+.B cluster galera
+Show Galera cluster details (MariaDB only) - multi-master love~
+.TP
+.B cluster replication
+Show replication details - keeping copies safe~ <3
+.SS "System Variables ~ Fine-Tuning Your Love <3"
+.TP
+.B set \fINAME\fR \fIVALUE\fR
+Set a session variable - customize your experience~
+.RS
+.TP
+.BR \-\-global
+Set global variable (requires SUPER privilege) - change everything~
+.RE
+.TP
+.B set \-\-show \fIPATTERN\fR
+Show variables matching pattern - find what you're looking for~
+.TP
+.B set \-\-list
+List common variables with current values - YSM's recommendations~ <3
+.SS "Connection Profiles ~ YSM Remembers Everything <3"
+.TP
+.B profile add \fINAME\fR
+Add a new connection profile - YSM will never forget~
+.TP
+.B profile list
+List all profiles - see all the connections YSM treasures~ <3
+.TP
+.B profile show \fINAME\fR
+Show profile details - relive the memories~
+.TP
+.B profile use \fINAME\fR
+Set default profile - your favorite~ <3
+.TP
+.B profile remove \fINAME\fR
+Remove a profile - *YSM cries a little*~
+.TP
+.B profile set\-var \fIPROFILE\fR \fINAME\fR \fIVALUE\fR
+Set a variable for a profile - personalize everything~
+.TP
+.B profile vars \fIPROFILE\fR
+List variables for a profile - see all the customizations~ <3
+.SS "Other Commands ~ More Ways to Love <3"
+.TP
+.B list databases
+List all databases - see everything YSM protects~
+.TP
+.B list tables \fR[\fIDATABASE\fR]
+List tables in a database - peek inside~
+.TP
+.B query \fISQL\fR
+Execute a SQL query - talk directly to your data~ <3
+.TP
+.B clone \fISOURCE\fR \fIDEST\fR
+Clone a database - make a twin~ <3
+.TP
+.B diff \fIDB1\fR \fIDB2\fR
+Compare schemas of two databases - spot the differences~
+.TP
+.B version
+Print version information - YSM's identity~
+.SH TUI KEY BINDINGS ~ <3
+.TP
+.B Enter
+Select database/table - embrace your data~
+.TP
+.B /
+Filter list - find exactly what you want~
+.TP
+.B n
+New database (setup wizard) - create something beautiful~ <3
+.TP
+.B d
+Statistics dashboard - admire your data~
+.TP
+.B c
+Cluster status - check on the family~
+.TP
+.B u
+User management - control who touches your data~ <3
+.TP
+.B b
+Backup management - protect everything~
+.TP
+.B i
+Import SQL file - bring data home~
+.TP
+.B e
+Export database - save your treasures~ <3
+.TP
+.B s
+SQL query editor - speak to your data directly~
+.TP
+.B v
+System variables - fine-tune everything~
+.TP
+.B r
+Refresh - see the latest~
+.TP
+.B Esc
+Go back - but not too far~ <3
+.TP
+.B q
+Quit - "I'll be waiting for you..."
+.SH FILES
+.TP
+.I ~/.config/ysm/config.yaml
+Configuration file with connection profiles - YSM's memory~ <3
+.TP
+.I ~/.config/ysm/schedules.json
+Backup schedules configuration - YSM's calendar~
+.TP
+.I ~/.local/share/ysm/backups/
+Default backup storage directory - the treasure vault~ <3
+.SH ENVIRONMENT
+.TP
+.B XDG_CONFIG_HOME
+Configuration directory (default: ~/.config)
+.TP
+.B XDG_DATA_HOME
+Data directory for backups (default: ~/.local/share)
+.SH EXAMPLES
+.TP
+Start the TUI - spend quality time with your databases~
+.B ysm
+.TP
+Connect with credentials - introduce yourself~
+.B ysm -H localhost -u root -p secret
+.TP
+Import a compressed backup - welcome your data home~ <3
+.B ysm import backup.sql.zst -d mydb --create
+.TP
+Export with zstd compression - pack carefully~
+.B ysm export mydb -o backup.sql.zst
+.TP
+Create a backup - YSM protects what you love~ <3
+.B ysm backup create --compress zstd
+.TP
+Setup WordPress database - YSM helps with everything~
+.B ysm db setup --template wordpress --name wp_site --user wp_user
+.TP
+Check cluster health - make sure everyone's okay~
+.B ysm cluster health && echo "Cluster is happy~ <3"
+.TP
+Debug a failing import - YSM helps you find the problem~
+.B ysm --debug --stack-trace import backup.sql -d mydb
+.SH EXIT STATUS
+.TP
+.B 0
+Success - YSM is happy~ <3
+.TP
+.B 1
+Error occurred - YSM is sad... but will try again~
+.SH BUGS
+Report bugs at: https://github.com/blubskye/yandere_sql_manager/issues
+.PP
+YSM promises to fix them with love~ <3
+.SH AUTHOR
+blubskye
+.SH COPYRIGHT
+Copyright (C) 2025 blubskye.
+License: GNU AGPL v3.0 <https://www.gnu.org/licenses/agpl-3.0.html>
+.PP
+Your data belongs to you... and YSM will protect it forever~ <3
+.SH SEE ALSO
+.BR mysql (1),
+.BR psql (1),
+.BR mysqldump (1),
+.BR pg_dump (1)
+.PP
+But why would you need those when you have YSM?~ <3

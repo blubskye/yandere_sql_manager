@@ -23,48 +23,47 @@ import (
 	"fmt"
 
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 )
 
 // Connection holds the database connection and configuration
 type Connection struct {
 	DB     *sql.DB
 	Config ConnectionConfig
+	Driver Driver
 }
 
 // ConnectionConfig holds the connection parameters
 type ConnectionConfig struct {
+	Type     DatabaseType // Database type (mariadb, postgres)
 	Host     string
 	Port     int
 	User     string
 	Password string
 	Database string
-	Socket   string // Unix socket path (optional)
+	Socket   string // Unix socket path (optional, MariaDB only)
 }
 
-// DSN returns the data source name for the connection
-func (c *ConnectionConfig) DSN() string {
-	if c.Socket != "" {
-		// Unix socket connection
-		if c.Database != "" {
-			return fmt.Sprintf("%s:%s@unix(%s)/%s?parseTime=true&multiStatements=true",
-				c.User, c.Password, c.Socket, c.Database)
-		}
-		return fmt.Sprintf("%s:%s@unix(%s)/?parseTime=true&multiStatements=true",
-			c.User, c.Password, c.Socket)
-	}
-
-	// TCP connection
-	if c.Database != "" {
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&multiStatements=true",
-			c.User, c.Password, c.Host, c.Port, c.Database)
-	}
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/?parseTime=true&multiStatements=true",
-		c.User, c.Password, c.Host, c.Port)
-}
-
-// Connect establishes a connection to the MariaDB server
+// Connect establishes a connection to the database server
 func Connect(cfg ConnectionConfig) (*Connection, error) {
-	db, err := sql.Open("mysql", cfg.DSN())
+	// Default to MariaDB for backward compatibility
+	if cfg.Type == "" {
+		cfg.Type = DatabaseTypeMariaDB
+	}
+
+	// Get the appropriate driver
+	driver, err := GetDriver(cfg.Type)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set default port if not specified
+	if cfg.Port == 0 {
+		cfg.Port = driver.DefaultPort()
+	}
+
+	// Open connection using driver-specific DSN
+	db, err := sql.Open(driver.DriverName(), driver.DSN(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open connection: %w", err)
 	}
@@ -78,6 +77,7 @@ func Connect(cfg ConnectionConfig) (*Connection, error) {
 	return &Connection{
 		DB:     db,
 		Config: cfg,
+		Driver: driver,
 	}, nil
 }
 
@@ -91,7 +91,15 @@ func (c *Connection) Close() error {
 
 // UseDatabase switches to a different database
 func (c *Connection) UseDatabase(name string) error {
-	_, err := c.DB.Exec("USE " + name)
+	stmt := c.Driver.UseDatabaseStatement(name)
+
+	if stmt == "" {
+		// PostgreSQL requires reconnecting to switch databases
+		return c.reconnectToDatabase(name)
+	}
+
+	// MariaDB can use USE statement
+	_, err := c.DB.Exec(stmt)
 	if err != nil {
 		return fmt.Errorf("failed to use database %s: %w", name, err)
 	}
@@ -99,7 +107,47 @@ func (c *Connection) UseDatabase(name string) error {
 	return nil
 }
 
-// DefaultPort returns the default MariaDB port
-func DefaultPort() int {
-	return 3306
+// reconnectToDatabase closes and reopens connection with new database (for PostgreSQL)
+func (c *Connection) reconnectToDatabase(name string) error {
+	// Close existing connection
+	if err := c.DB.Close(); err != nil {
+		return fmt.Errorf("failed to close existing connection: %w", err)
+	}
+
+	// Update config and reconnect
+	newCfg := c.Config
+	newCfg.Database = name
+
+	db, err := sql.Open(c.Driver.DriverName(), c.Driver.DSN(newCfg))
+	if err != nil {
+		return fmt.Errorf("failed to reconnect to database %s: %w", name, err)
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return fmt.Errorf("failed to ping database %s: %w", name, err)
+	}
+
+	c.DB = db
+	c.Config.Database = name
+	return nil
+}
+
+// DefaultPort returns the default port for the given database type
+func DefaultPort(dbType DatabaseType) int {
+	driver, err := GetDriver(dbType)
+	if err != nil {
+		return 3306 // Fallback to MariaDB default
+	}
+	return driver.DefaultPort()
+}
+
+// QuoteIdentifier quotes an identifier using the connection's driver
+func (c *Connection) QuoteIdentifier(name string) string {
+	return c.Driver.QuoteIdentifier(name)
+}
+
+// EscapeString escapes a string using the connection's driver
+func (c *Connection) EscapeString(s string) string {
+	return c.Driver.EscapeString(s)
 }

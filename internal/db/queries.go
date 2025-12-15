@@ -52,7 +52,7 @@ type QueryResult struct {
 
 // ListDatabases returns all databases on the server
 func (c *Connection) ListDatabases() ([]Database, error) {
-	rows, err := c.DB.Query("SHOW DATABASES")
+	rows, err := c.DB.Query(c.Driver.ListDatabasesQuery())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list databases: %w", err)
 	}
@@ -72,7 +72,7 @@ func (c *Connection) ListDatabases() ([]Database, error) {
 
 // ListTables returns all tables in the current database
 func (c *Connection) ListTables() ([]Table, error) {
-	rows, err := c.DB.Query("SHOW TABLE STATUS")
+	rows, err := c.DB.Query(c.Driver.ListTablesQuery())
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tables: %w", err)
 	}
@@ -103,14 +103,23 @@ func (c *Connection) ListTables() ([]Table, error) {
 			case "Name":
 				if v, ok := val.([]byte); ok {
 					table.Name = string(v)
+				} else if v, ok := val.(string); ok {
+					table.Name = v
 				}
 			case "Engine":
 				if v, ok := val.([]byte); ok {
 					table.Engine = string(v)
+				} else if v, ok := val.(string); ok {
+					table.Engine = v
 				}
 			case "Rows":
-				if v, ok := val.(int64); ok {
+				switch v := val.(type) {
+				case int64:
 					table.Rows = v
+				case float64:
+					table.Rows = int64(v)
+				case []byte:
+					fmt.Sscanf(string(v), "%d", &table.Rows)
 				}
 			}
 		}
@@ -122,7 +131,7 @@ func (c *Connection) ListTables() ([]Table, error) {
 
 // DescribeTable returns the columns of a table
 func (c *Connection) DescribeTable(tableName string) ([]Column, error) {
-	rows, err := c.DB.Query("DESCRIBE " + tableName)
+	rows, err := c.DB.Query(c.Driver.DescribeTableQuery(tableName))
 	if err != nil {
 		return nil, fmt.Errorf("failed to describe table: %w", err)
 	}
@@ -204,14 +213,14 @@ func (c *Connection) Execute(sql string) (int64, error) {
 
 // GetTableData returns rows from a table with pagination
 func (c *Connection) GetTableData(tableName string, limit, offset int) (*QueryResult, error) {
-	query := fmt.Sprintf("SELECT * FROM `%s` LIMIT %d OFFSET %d", tableName, limit, offset)
+	query := fmt.Sprintf("SELECT * FROM %s LIMIT %d OFFSET %d", c.QuoteIdentifier(tableName), limit, offset)
 	return c.Query(query)
 }
 
 // CountTableRows returns the number of rows in a table
 func (c *Connection) CountTableRows(tableName string) (int64, error) {
 	var count int64
-	err := c.DB.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM `%s`", tableName)).Scan(&count)
+	err := c.DB.QueryRow(c.Driver.TableRowCountQuery(tableName)).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count rows: %w", err)
 	}
@@ -220,7 +229,7 @@ func (c *Connection) CountTableRows(tableName string) (int64, error) {
 
 // CreateDatabase creates a new database
 func (c *Connection) CreateDatabase(name string) error {
-	_, err := c.DB.Exec(fmt.Sprintf("CREATE DATABASE `%s`", name))
+	_, err := c.DB.Exec(c.Driver.CreateDatabaseQuery(name))
 	if err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
@@ -229,7 +238,7 @@ func (c *Connection) CreateDatabase(name string) error {
 
 // DropDatabase deletes a database
 func (c *Connection) DropDatabase(name string) error {
-	_, err := c.DB.Exec(fmt.Sprintf("DROP DATABASE `%s`", name))
+	_, err := c.DB.Exec(c.Driver.DropDatabaseQuery(name))
 	if err != nil {
 		return fmt.Errorf("failed to drop database: %w", err)
 	}
