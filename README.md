@@ -135,7 +135,17 @@ ysm -t postgres -H localhost -P 5432 -u postgres
 | `Esc` | Go back |
 | `q` | Quit |
 
-**Note:** All keybindings are fully customizable! Press `?` in the TUI to open the keybindings settings~
+**Connection Screen Key Bindings:**
+| Key | Action |
+|-----|--------|
+| `Tab` | Next field |
+| `Enter` | Connect (or select type/profile) |
+| `Ctrl+S` | Save current connection as profile |
+| `Ctrl+P` | Load saved profile |
+| `←/→` | Change database type |
+| `Esc` | Quit |
+
+**Note:** All keybindings are fully customizable! Press `?` in any view to open the keybindings settings. You can remap any key to any action and changes are saved automatically to `~/.config/ysm/keybindings.yaml`~
 
 ### CLI Commands
 

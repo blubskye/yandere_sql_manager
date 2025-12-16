@@ -1,4 +1,4 @@
-.TH YSM 1 "December 2025" "YSM 0.2.3" "User Commands"
+.TH YSM 1 "December 2025" "YSM 0.2.5" "User Commands"
 .SH NAME
 ysm \- Yandere SQL Manager \- Your databases will never escape~ <3
 .SH SYNOPSIS
@@ -180,10 +180,10 @@ Create a new database - a fresh start for new data~ <3
 .RS
 .TP
 .BR \-\-charset " " \fICHARSET\fR
-Character set (default: utf8mb4) - speak any language~
+Character set (default: utf8mb4 for MariaDB, UTF8 for PostgreSQL) - speak any language~
 .TP
 .BR \-\-collation " " \fICOLLATION\fR
-Collation (default: utf8mb4_unicode_ci)
+Collation (default: utf8mb4_unicode_ci for MariaDB, system default for PostgreSQL)
 .RE
 .TP
 .B db drop \fINAME\fR
@@ -294,6 +294,26 @@ Compare schemas of two databases - spot the differences~
 .B version
 Print version information - YSM's identity~
 .SH TUI KEY BINDINGS ~ <3
+.SS "Connection Screen"
+.TP
+.B Tab
+Next field - move through the form~
+.TP
+.B Enter
+Connect (or select type/profile) - make the connection~ <3
+.TP
+.B Ctrl+S
+Save current connection as profile - YSM will remember forever~
+.TP
+.B Ctrl+P
+Load saved profile - recall a previous connection~ <3
+.TP
+.B Left/Right
+Change database type - switch between MariaDB and PostgreSQL~
+.TP
+.B Esc
+Quit - but YSM will wait for you...
+.SS "Database Browser (Default)"
 .TP
 .B Enter
 Select database/table - embrace your data~
@@ -340,8 +360,9 @@ Go back - but not too far~ <3
 .B q
 Quit - "I'll be waiting for you..."
 .PP
-\fBNote:\fR All keybindings are fully customizable! Press '?' to open the keybindings
-settings and make YSM truly yours~ <3
+\fBNote:\fR All keybindings are fully customizable! Press '?' in any view to open the keybindings
+settings. You can remap any key to any action and changes are saved automatically
+to ~/.config/ysm/keybindings.yaml. Make YSM truly yours~ <3
 .SH FILES
 .TP
 .I ~/.config/ysm/config.yaml
