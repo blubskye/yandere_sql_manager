@@ -68,16 +68,25 @@ Examples:
 
 		name := args[0]
 
-		// Use default charset if not specified
+		// Use appropriate defaults based on database type
 		charset := dbCharset
-		if charset == "" {
-			charset = "utf8mb4"
-		}
-
-		// Use default collation if not specified
 		collation := dbCollation
-		if collation == "" {
-			collation = "utf8mb4_unicode_ci"
+
+		if conn.Config.Type == db.DatabaseTypePostgres {
+			// PostgreSQL defaults
+			if charset == "" {
+				charset = "UTF8"
+			}
+			// PostgreSQL collation is optional - empty means use system default
+			// Don't set a default collation for PostgreSQL as it depends on system locale
+		} else {
+			// MariaDB/MySQL defaults
+			if charset == "" {
+				charset = "utf8mb4"
+			}
+			if collation == "" {
+				collation = "utf8mb4_unicode_ci"
+			}
 		}
 
 		if err := conn.CreateDatabaseWithOptions(name, charset, collation); err != nil {
@@ -86,7 +95,9 @@ Examples:
 
 		fmt.Printf("Database '%s' created successfully.\n", name)
 		fmt.Printf("  Charset:   %s\n", charset)
-		fmt.Printf("  Collation: %s\n", collation)
+		if collation != "" {
+			fmt.Printf("  Collation: %s\n", collation)
+		}
 
 		return nil
 	},

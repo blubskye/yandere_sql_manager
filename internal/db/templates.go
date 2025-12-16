@@ -29,6 +29,36 @@ type AppTemplate struct {
 	Privileges  []string `json:"privileges"`
 }
 
+// GetCharsetForDB returns the appropriate charset for the database type
+func (t *AppTemplate) GetCharsetForDB(dbType DatabaseType) string {
+	if dbType == DatabaseTypePostgres {
+		// Map MySQL charsets to PostgreSQL encodings
+		switch t.Charset {
+		case "utf8mb4", "utf8":
+			return "UTF8"
+		case "latin1":
+			return "LATIN1"
+		case "ascii":
+			return "SQL_ASCII"
+		case "binary":
+			return "UTF8" // PostgreSQL doesn't have binary encoding, use UTF8
+		default:
+			return "UTF8"
+		}
+	}
+	return t.Charset
+}
+
+// GetCollationForDB returns the appropriate collation for the database type
+func (t *AppTemplate) GetCollationForDB(dbType DatabaseType) string {
+	if dbType == DatabaseTypePostgres {
+		// PostgreSQL uses system locale-based collations
+		// Return empty to use system default, or map common patterns
+		return "" // Let PostgreSQL use its default
+	}
+	return t.Collation
+}
+
 // DefaultTemplates returns the built-in application templates
 func DefaultTemplates() []AppTemplate {
 	return []AppTemplate{
@@ -197,8 +227,12 @@ func (c *Connection) SetupAppDatabase(template *AppTemplate, dbName, username, p
 		host = "localhost"
 	}
 
+	// Get appropriate charset and collation for the database type
+	charset := template.GetCharsetForDB(c.Config.Type)
+	collation := template.GetCollationForDB(c.Config.Type)
+
 	// Create the database with template settings
-	if err := c.CreateDatabaseWithOptions(dbName, template.Charset, template.Collation); err != nil {
+	if err := c.CreateDatabaseWithOptions(dbName, charset, collation); err != nil {
 		return fmt.Errorf("failed to create database: %w", err)
 	}
 
@@ -229,6 +263,32 @@ func CommonCharsets() []string {
 		"ascii",
 		"binary",
 	}
+}
+
+// CommonCharsetsForDB returns commonly used character sets for the database type
+func CommonCharsetsForDB(dbType DatabaseType) []string {
+	if dbType == DatabaseTypePostgres {
+		return []string{
+			"UTF8",
+			"LATIN1",
+			"SQL_ASCII",
+			"WIN1252",
+		}
+	}
+	return CommonCharsets()
+}
+
+// CommonCollationsForDB returns common collations for the database type
+func CommonCollationsForDB(dbType DatabaseType) []string {
+	if dbType == DatabaseTypePostgres {
+		return []string{
+			"C",
+			"POSIX",
+			"en_US.UTF-8",
+			"C.UTF-8",
+		}
+	}
+	return CommonCollationsForCharset("utf8mb4")
 }
 
 // CommonCollationsForCharset returns common collations for a charset

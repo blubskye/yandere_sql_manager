@@ -41,19 +41,22 @@ var dbTypes = []string{"mariadb", "postgres"}
 
 // ConnectView is the connection form view
 type ConnectView struct {
-	inputs         []textinput.Model
-	focused        int
-	dbTypeIndex    int // 0 = mariadb, 1 = postgres
-	showTypeMenu   bool
-	profiles       []string
-	selectedProf   int
-	showProfiles   bool
-	cfg            *config.Config
-	connCfg        *db.ConnectionConfig
-	err            error
-	connecting     bool
-	width          int
-	height         int
+	inputs          []textinput.Model
+	focused         int
+	dbTypeIndex     int // 0 = mariadb, 1 = postgres
+	showTypeMenu    bool
+	profiles        []string
+	selectedProf    int
+	showProfiles    bool
+	showSaveDialog  bool
+	saveProfileName textinput.Model
+	cfg             *config.Config
+	connCfg         *db.ConnectionConfig
+	err             error
+	connecting      bool
+	saveSuccess     string
+	width           int
+	height          int
 }
 
 const (
@@ -95,6 +98,11 @@ func NewConnectView(cfg *config.Config, connCfg *db.ConnectionConfig) *ConnectVi
 	// Database input
 	v.inputs[4] = textinput.New()
 	v.inputs[4].Placeholder = "(optional)"
+
+	// Save profile name input
+	v.saveProfileName = textinput.New()
+	v.saveProfileName.Placeholder = "my-profile"
+	v.saveProfileName.Focus()
 
 	// Load profiles
 	v.profiles = cfg.ListProfiles()
@@ -163,6 +171,10 @@ func (v *ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			if v.showSaveDialog {
+				v.showSaveDialog = false
+				return v, nil
+			}
 			if v.showProfiles {
 				v.showProfiles = false
 				return v, nil
@@ -212,6 +224,15 @@ func (v *ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, nil
 
 		case "enter":
+			if v.showSaveDialog {
+				// Save the profile
+				name := v.saveProfileName.Value()
+				if name != "" {
+					v.saveProfile(name)
+				}
+				v.showSaveDialog = false
+				return v, nil
+			}
 			if v.showProfiles {
 				if v.selectedProf < len(v.profiles) {
 					if p, err := v.cfg.GetProfile(v.profiles[v.selectedProf]); err == nil {
@@ -255,6 +276,13 @@ func (v *ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				v.showProfiles = !v.showProfiles
 			}
 			return v, nil
+
+		case "ctrl+s":
+			// Show save profile dialog
+			v.showSaveDialog = true
+			v.saveProfileName.SetValue("")
+			v.saveProfileName.Focus()
+			return v, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -270,6 +298,13 @@ func (v *ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.connecting = false
 		v.err = msg
 		return v, nil
+	}
+
+	// Handle save dialog input
+	if v.showSaveDialog {
+		var cmd tea.Cmd
+		v.saveProfileName, cmd = v.saveProfileName.Update(msg)
+		return v, cmd
 	}
 
 	// Handle input updates (only for text inputs, not type selector)
@@ -337,6 +372,36 @@ func (v *ConnectView) prevInput() {
 	}
 }
 
+func (v *ConnectView) saveProfile(name string) {
+	// Get port value
+	port := 0
+	if v.inputs[1].Value() != "" {
+		if p, err := strconv.Atoi(v.inputs[1].Value()); err == nil {
+			port = p
+		}
+	}
+
+	profile := config.Profile{
+		Type:     dbTypes[v.dbTypeIndex],
+		Host:     v.inputs[0].Value(),
+		Port:     port,
+		User:     v.inputs[2].Value(),
+		Password: v.inputs[3].Value(),
+		Database: v.inputs[4].Value(),
+	}
+
+	v.cfg.AddProfile(name, profile)
+	if err := v.cfg.Save(); err != nil {
+		v.err = err
+		return
+	}
+
+	// Refresh profiles list
+	v.profiles = v.cfg.ListProfiles()
+	v.saveSuccess = name
+	v.err = nil
+}
+
 func (v *ConnectView) connect() tea.Cmd {
 	v.connecting = true
 	v.err = nil
@@ -391,6 +456,12 @@ func (v *ConnectView) View() string {
 	b.WriteString(logo())
 	b.WriteString("\n\n")
 
+	// Save dialog popup
+	if v.showSaveDialog {
+		b.WriteString(v.renderSaveDialog())
+		return b.String()
+	}
+
 	// Profile selector popup
 	if v.showProfiles {
 		b.WriteString(v.renderProfileSelector())
@@ -437,6 +508,13 @@ func (v *ConnectView) View() string {
 		b.WriteString("\n\n")
 	}
 
+	// Success message
+	if v.saveSuccess != "" {
+		b.WriteString(successStyle.Render(fmt.Sprintf("Profile '%s' saved!", v.saveSuccess)))
+		b.WriteString("\n\n")
+		v.saveSuccess = "" // Clear after display
+	}
+
 	// Error message
 	if v.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("Error: %v", v.err)))
@@ -449,9 +527,9 @@ func (v *ConnectView) View() string {
 	}
 
 	// Help
-	help := []string{"Enter: Connect", "Tab: Next field", "Ctrl+C: Quit"}
+	help := []string{"Enter: Connect", "Tab: Next field", "Ctrl+S: Save Profile", "Ctrl+C: Quit"}
 	if len(v.profiles) > 0 {
-		help = append(help, "Ctrl+P: Profiles")
+		help = append(help, "Ctrl+P: Load Profile")
 	}
 	b.WriteString(helpStyle.Render(strings.Join(help, " | ")))
 
@@ -480,6 +558,20 @@ func (v *ConnectView) renderTypeSelector() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("Enter: Select | Esc: Cancel | ↑↓: Navigate"))
+
+	return b.String()
+}
+
+func (v *ConnectView) renderSaveDialog() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Save Connection Profile"))
+	b.WriteString("\n\n")
+
+	b.WriteString("Enter a name for this profile:\n\n")
+	b.WriteString(v.saveProfileName.View())
+	b.WriteString("\n\n")
+
+	b.WriteString(helpStyle.Render("Enter: Save | Esc: Cancel"))
 
 	return b.String()
 }
